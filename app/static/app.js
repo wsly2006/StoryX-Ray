@@ -1,7 +1,8 @@
 // StoryX-Ray 前端逻辑：单页交互、调用后端、渲染结果
 
 const $ = (sel) => document.querySelector(sel);
-const CONFIG_KEY = "storyxray.config.v1";
+const CONFIG_KEY = "storyxray.config.v2";
+const LEGACY_KEY = "storyxray.config.v1";
 
 const els = {
   text: $("#novel-text"),
@@ -10,6 +11,7 @@ const els = {
   model: $("#model"),
   apiKey: $("#api-key"),
   baseUrl: $("#base-url"),
+  presetName: $("#preset-name"),
   apiKeyRow: $("#api-key-row"),
   baseUrlRow: $("#base-url-row"),
   passes: $("#passes"),
@@ -24,14 +26,17 @@ const els = {
   configSummary: $("#config-summary"),
   configModal: $("#config-modal"),
   configSave: $("#config-save"),
+  presetList: $("#preset-list"),
+  presetAdd: $("#preset-add"),
+  presetEmpty: $("#preset-empty"),
+  presetFormWrap: $("#preset-form-wrap"),
 };
 
-// 各后端的占位提示与字段可见性
 const BACKEND_HINTS = {
-  gemini:   { model: "gemini-2.5-flash",  baseUrl: "（无需填写）",               needKey: true,  needBase: false },
-  ollama:   { model: "qwen361:latest",    baseUrl: "http://localhost:11434",     needKey: false, needBase: true  },
+  gemini:   { model: "gemini-2.5-flash",  baseUrl: "（无需填写）",                needKey: true,  needBase: false },
+  ollama:   { model: "qwen361:latest",    baseUrl: "http://localhost:11434",      needKey: false, needBase: true  },
   deepseek: { model: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com/v1", needKey: true,  needBase: false },
-  openai:   { model: "gpt-4o-mini",       baseUrl: "https://api.openai.com/v1",  needKey: true,  needBase: true  },
+  openai:   { model: "gpt-4o-mini",       baseUrl: "https://api.openai.com/v1",   needKey: true,  needBase: true  },
 };
 const BACKEND_LABEL = {
   gemini: "Gemini",
@@ -40,17 +45,70 @@ const BACKEND_LABEL = {
   openai: "OpenAI 兼容",
 };
 
-// 内存里的当前配置，弹窗里的输入框是它的视图
-let currentConfig = loadConfig();
+// 工作配置：包含所有预设和全局参数；弹窗里的列表/表单是它的视图
+let workingConfig = loadConfig();
+// 弹窗中当前正在编辑的预设 id；null 表示没有可编辑项
+let editingId = workingConfig.presets[0]?.id || null;
+
+function genId() {
+  // 老浏览器没 crypto.randomUUID，简单回退
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return "p-" + Math.random().toString(36).slice(2, 10);
+}
+
+function defaultPreset(overrides = {}) {
+  return {
+    id: genId(),
+    name: "默认预设",
+    backend: "ollama",
+    model: "",
+    apiKey: "",
+    baseUrl: "",
+    ...overrides,
+  };
+}
+
+function migrateLegacy() {
+  // v1: { backend, model, apiKey, baseUrl, passes, charBuffer }
+  try {
+    const raw = localStorage.getItem(LEGACY_KEY);
+    if (!raw) return null;
+    const old = JSON.parse(raw);
+    const preset = defaultPreset({
+      name: BACKEND_LABEL[old.backend] || "迁移预设",
+      backend: old.backend || "ollama",
+      model: old.model || "",
+      apiKey: old.apiKey || "",
+      baseUrl: old.baseUrl || "",
+    });
+    return {
+      version: 2,
+      presets: [preset],
+      activeId: preset.id,
+      passes: old.passes || 1,
+      charBuffer: old.charBuffer || 1500,
+    };
+  } catch (e) {
+    console.warn("迁移旧配置失败", e);
+    return null;
+  }
+}
 
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const cfg = JSON.parse(raw);
+      if (Array.isArray(cfg.presets) && cfg.presets.length) return cfg;
+    }
   } catch (e) {
     console.warn("读取本地配置失败", e);
   }
-  return { backend: "ollama", model: "", apiKey: "", baseUrl: "", passes: 1, charBuffer: 1500 };
+  // 没 v2 配置：尝试迁移 v1，再不行就建个空白默认
+  const migrated = migrateLegacy();
+  if (migrated) return migrated;
+  const preset = defaultPreset();
+  return { version: 2, presets: [preset], activeId: preset.id, passes: 1, charBuffer: 1500 };
 }
 
 function saveConfig(cfg) {
@@ -58,10 +116,19 @@ function saveConfig(cfg) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
 }
 
+function activePreset(cfg = workingConfig) {
+  return cfg.presets.find((p) => p.id === cfg.activeId) || cfg.presets[0];
+}
+
 function updateConfigSummary() {
-  const cfg = currentConfig;
-  const modelText = cfg.model || `默认（${BACKEND_HINTS[cfg.backend].model}）`;
-  els.configSummary.textContent = `${BACKEND_LABEL[cfg.backend]} · ${modelText}`;
+  const cfg = workingConfig;
+  const preset = activePreset(cfg);
+  if (!preset) {
+    els.configSummary.textContent = "未配置";
+    return;
+  }
+  const modelText = preset.model || `默认（${BACKEND_HINTS[preset.backend].model}）`;
+  els.configSummary.textContent = `${preset.name} · ${BACKEND_LABEL[preset.backend]} · ${modelText}`;
 }
 
 function syncBackendFields() {
@@ -72,33 +139,140 @@ function syncBackendFields() {
   els.baseUrlRow.style.display = hint.needBase ? "" : "none";
 }
 
-function fillFormFromConfig() {
-  const cfg = currentConfig;
-  els.backend.value = cfg.backend;
-  els.model.value = cfg.model || "";
-  els.apiKey.value = cfg.apiKey || "";
-  els.baseUrl.value = cfg.baseUrl || "";
-  els.passes.value = cfg.passes || 1;
-  els.charBuffer.value = cfg.charBuffer || 1500;
+function renderPresetList() {
+  const cfg = workingConfig;
+  els.presetList.innerHTML = "";
+  cfg.presets.forEach((p) => {
+    const li = document.createElement("li");
+    li.className = "preset-item" + (p.id === editingId ? " editing" : "");
+    li.dataset.id = p.id;
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "preset-default";
+    radio.checked = p.id === cfg.activeId;
+    radio.title = "设为默认";
+    radio.addEventListener("click", (e) => {
+      e.stopPropagation();
+      cfg.activeId = p.id;
+      renderPresetList();
+    });
+
+    const label = document.createElement("div");
+    label.className = "preset-item-label";
+    const nameEl = document.createElement("div");
+    nameEl.className = "preset-item-name";
+    nameEl.textContent = p.name || "(未命名)";
+    if (p.id === cfg.activeId) {
+      const badge = document.createElement("span");
+      badge.className = "preset-item-badge";
+      badge.textContent = "默认";
+      nameEl.appendChild(badge);
+    }
+    const metaEl = document.createElement("div");
+    metaEl.className = "preset-item-meta";
+    metaEl.textContent = `${BACKEND_LABEL[p.backend]} · ${p.model || "默认模型"}`;
+    label.appendChild(nameEl);
+    label.appendChild(metaEl);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "preset-item-del";
+    del.title = "删除该预设";
+    del.textContent = "✕";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removePreset(p.id);
+    });
+
+    li.appendChild(radio);
+    li.appendChild(label);
+    li.appendChild(del);
+    li.addEventListener("click", () => selectPreset(p.id));
+    els.presetList.appendChild(li);
+  });
+
+  // 默认项的删除按钮置灰但仍可点；只剩一条时禁用删除
+  els.presetList.querySelectorAll(".preset-item-del").forEach((btn) => {
+    btn.disabled = cfg.presets.length <= 1;
+  });
+}
+
+function selectPreset(id) {
+  // 切换编辑目标前，把当前表单内容写回正在编辑的预设，避免切走丢失
+  flushFormToPreset();
+  editingId = id;
+  fillFormFromPreset(id);
+  renderPresetList();
+}
+
+function addPreset() {
+  flushFormToPreset();
+  const preset = defaultPreset({ name: `预设 ${workingConfig.presets.length + 1}` });
+  workingConfig.presets.push(preset);
+  editingId = preset.id;
+  fillFormFromPreset(preset.id);
+  renderPresetList();
+  // 新建后聚焦名称，方便立刻命名
+  requestAnimationFrame(() => els.presetName.focus());
+}
+
+function removePreset(id) {
+  const cfg = workingConfig;
+  if (cfg.presets.length <= 1) return;
+  const idx = cfg.presets.findIndex((p) => p.id === id);
+  if (idx < 0) return;
+  cfg.presets.splice(idx, 1);
+  // 被删的若是默认，把默认转到第一项
+  if (cfg.activeId === id) cfg.activeId = cfg.presets[0].id;
+  // 被删的若正在编辑，切到第一项
+  if (editingId === id) {
+    editingId = cfg.presets[0].id;
+    fillFormFromPreset(editingId);
+  }
+  renderPresetList();
+}
+
+function fillFormFromPreset(id) {
+  const p = workingConfig.presets.find((x) => x.id === id);
+  if (!p) {
+    els.presetEmpty.hidden = false;
+    els.presetFormWrap.hidden = true;
+    return;
+  }
+  els.presetEmpty.hidden = true;
+  els.presetFormWrap.hidden = false;
+  els.presetName.value = p.name || "";
+  els.backend.value = p.backend;
+  els.model.value = p.model || "";
+  els.apiKey.value = p.apiKey || "";
+  els.baseUrl.value = p.baseUrl || "";
   syncBackendFields();
 }
 
-function readFormToConfig() {
-  return {
-    backend: els.backend.value,
-    model: els.model.value.trim(),
-    apiKey: els.apiKey.value.trim(),
-    baseUrl: els.baseUrl.value.trim(),
-    passes: Number(els.passes.value) || 1,
-    charBuffer: Number(els.charBuffer.value) || 1500,
-  };
+function flushFormToPreset() {
+  // 把当前表单值写回 editingId 指向的预设；用于切换/新增/保存前
+  if (!editingId) return;
+  const p = workingConfig.presets.find((x) => x.id === editingId);
+  if (!p) return;
+  p.name = els.presetName.value.trim() || "(未命名)";
+  p.backend = els.backend.value;
+  p.model = els.model.value.trim();
+  p.apiKey = els.apiKey.value.trim();
+  p.baseUrl = els.baseUrl.value.trim();
 }
 
 function openConfigModal() {
-  fillFormFromConfig();
+  // 打开时若 editingId 失效，重置到默认项
+  if (!workingConfig.presets.find((p) => p.id === editingId)) {
+    editingId = workingConfig.activeId || workingConfig.presets[0]?.id || null;
+  }
+  els.passes.value = workingConfig.passes || 1;
+  els.charBuffer.value = workingConfig.charBuffer || 1500;
+  renderPresetList();
+  if (editingId) fillFormFromPreset(editingId);
   els.configModal.hidden = false;
-  // 等一帧再聚焦，避免动画期间抢焦点
-  requestAnimationFrame(() => els.backend.focus());
+  requestAnimationFrame(() => els.presetName.focus());
 }
 
 function closeConfigModal() {
@@ -187,15 +361,20 @@ async function runExtraction() {
     return;
   }
 
-  const cfg = currentConfig;
+  const preset = activePreset(workingConfig);
+  if (!preset) {
+    setStatus("请先在「模型配置」里新增并保存一个预设", "error");
+    return;
+  }
+
   const payload = {
     text,
-    backend: cfg.backend,
-    model: cfg.model || null,
-    api_key: cfg.apiKey || null,
-    base_url: cfg.baseUrl || null,
-    extraction_passes: cfg.passes || 1,
-    max_char_buffer: cfg.charBuffer || 1500,
+    backend: preset.backend,
+    model: preset.model || null,
+    api_key: preset.apiKey || null,
+    base_url: preset.baseUrl || null,
+    extraction_passes: workingConfig.passes || 1,
+    max_char_buffer: workingConfig.charBuffer || 1500,
   };
 
   els.runBtn.disabled = true;
@@ -250,12 +429,27 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !els.configModal.hidden) closeConfigModal();
 });
 els.backend.addEventListener("change", syncBackendFields);
+els.presetAdd.addEventListener("click", addPreset);
+
+// 表单实时回写：用户在右侧改了字段，左侧列表的名字/概要也即时更新
+["input", "change"].forEach((evt) => {
+  [els.presetName, els.backend, els.model, els.apiKey, els.baseUrl].forEach((el) => {
+    el.addEventListener(evt, () => {
+      flushFormToPreset();
+      renderPresetList();
+    });
+  });
+});
+
 els.configSave.addEventListener("click", () => {
-  currentConfig = readFormToConfig();
-  saveConfig(currentConfig);
+  flushFormToPreset();
+  workingConfig.passes = Number(els.passes.value) || 1;
+  workingConfig.charBuffer = Number(els.charBuffer.value) || 1500;
+  saveConfig(workingConfig);
   updateConfigSummary();
   closeConfigModal();
-  setStatus(`已保存：${BACKEND_LABEL[currentConfig.backend]} · ${currentConfig.model || "默认模型"}`, "success");
+  const preset = activePreset(workingConfig);
+  setStatus(`已保存：默认预设「${preset.name}」· ${BACKEND_LABEL[preset.backend]}`, "success");
 });
 
 els.text.addEventListener("input", () => {

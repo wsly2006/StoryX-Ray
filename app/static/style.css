@@ -123,6 +123,7 @@ body {
   overflow: hidden;
   animation: modal-in 0.18s ease-out;
 }
+.modal-dialog.modal-wide { width: min(820px, calc(100vw - 40px)); }
 @keyframes modal-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to   { opacity: 1; transform: none; }
@@ -183,6 +184,12 @@ textarea#novel-text:focus { outline: 2px solid var(--primary); outline-offset: -
 }
 .form-grid label { display: flex; flex-direction: column; font-size: 12px; gap: 4px; }
 .form-grid label span { color: var(--muted); }
+.form-grid .field-hint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 2px;
+}
 .form-grid input, .form-grid select {
   padding: 7px 9px;
   border: 1px solid var(--border);
@@ -192,6 +199,138 @@ textarea#novel-text:focus { outline: 2px solid var(--primary); outline-offset: -
   font-family: inherit;
 }
 .form-grid input:focus, .form-grid select:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+.form-grid .span-2 { grid-column: span 2; }
+.form-grid-wide { grid-template-columns: 1fr 1fr; }
+
+/* 预设管理：左侧列表 + 右侧编辑 */
+.preset-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.preset-sidebar {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbff;
+  overflow: hidden;
+}
+.preset-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+.btn-mini {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+  color: var(--primary);
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-mini:hover { border-color: var(--primary); background: #eef2ff; }
+
+.preset-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  flex: 1;
+}
+.preset-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.preset-item:last-child { margin-bottom: 0; }
+.preset-item:hover { background: #fff; border-color: var(--border); }
+.preset-item.editing { background: #fff; border-color: var(--primary); box-shadow: 0 1px 4px rgba(79, 70, 229, 0.08); }
+.preset-item input[type="radio"] {
+  cursor: pointer;
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary);
+}
+.preset-item-label { overflow: hidden; min-width: 0; }
+.preset-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.preset-item-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: var(--primary);
+  letter-spacing: 0.3px;
+}
+.preset-item-meta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.preset-item-del {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 5px;
+  transition: background 0.15s, color 0.15s;
+}
+.preset-item-del:hover { background: #fee2e2; color: var(--error); }
+.preset-item-del:disabled { opacity: 0.25; cursor: not-allowed; }
+.preset-item-del:disabled:hover { background: transparent; color: var(--muted); }
+
+.preset-editor { min-width: 0; }
+.preset-editor .form-grid { margin-top: 0; }
+
+.divider {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+@media (max-width: 720px) {
+  .preset-layout { grid-template-columns: 1fr; }
+  .preset-list { max-height: 180px; }
+}
 
 button.primary {
   margin-top: 16px;

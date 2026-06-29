@@ -34,6 +34,11 @@ const els = {
   presetAdd: $("#preset-add"),
   presetEmpty: $("#preset-empty"),
   presetFormWrap: $("#preset-form-wrap"),
+  historyBtn: $("#open-history"),
+  historyModal: $("#history-modal"),
+  historyList: $("#history-list"),
+  historyEmpty: $("#history-empty"),
+  historySummary: $("#history-summary"),
 };
 
 const BACKEND_HINTS = {
@@ -401,6 +406,7 @@ async function runExtraction() {
     model: preset.model || null,
     api_key: preset.apiKey || null,
     base_url: preset.baseUrl || null,
+    preset_name: preset.name || null,
     extraction_passes: workingConfig.passes || 1,
     max_char_buffer: workingConfig.charBuffer || 1500,
   };
@@ -481,10 +487,13 @@ async function consumeSse(stream, started) {
       renderEvents(payload.events || []);
 
       const cost = ((Date.now() - started) / 1000).toFixed(1);
+      const saveMsg = payload.project_id ? `，已保存为「${payload.project_name}」` : "";
       setStatus(
-        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条`,
+        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条${saveMsg}`,
         "success"
       );
+      // 后台刷新历史列表，给顶栏摘要更新数字
+      refreshHistorySummary();
       // 进度条停留 1 秒再收，给用户视觉确认
       setTimeout(() => showProgress(false), 1000);
       return;
@@ -550,6 +559,179 @@ els.presetAdd.addEventListener("click", addPreset);
   });
 });
 
+// ---------- 历史记录 ----------
+let historyCache = [];
+
+async function refreshHistorySummary() {
+  try {
+    const resp = await fetch("/api/projects");
+    if (!resp.ok) return;
+    historyCache = await resp.json();
+    els.historySummary.textContent = `${historyCache.length} 条`;
+  } catch (e) {
+    // 静默忽略：顶栏数字非关键路径
+    console.warn("读取历史列表失败", e);
+  }
+}
+
+function formatHistoryTime(iso) {
+  if (!iso) return "";
+  // 后端写的是 isoformat(timespec="seconds")，没时区；当本地时间显示
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderHistoryList() {
+  els.historyList.innerHTML = "";
+  if (!historyCache.length) {
+    els.historyEmpty.hidden = false;
+    return;
+  }
+  els.historyEmpty.hidden = true;
+
+  historyCache.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "history-item";
+    li.dataset.id = item.id;
+
+    const main = document.createElement("div");
+    main.className = "history-item-main";
+
+    const title = document.createElement("div");
+    title.className = "history-item-title";
+    title.textContent = item.name || "(未命名)";
+
+    const snap = item.preset_snapshot || {};
+    const stats = item.stats || {};
+    const meta = document.createElement("div");
+    meta.className = "history-item-meta";
+    const backendLabel = BACKEND_LABEL[snap.backend] || snap.backend || "?";
+    const modelText = snap.model || "默认模型";
+    const elapsed = stats.elapsed_sec ? `${stats.elapsed_sec}s` : "";
+    const chars = stats.input_chars
+      ? stats.input_chars >= 1000
+        ? `${(stats.input_chars / 1000).toFixed(1)}k字`
+        : `${stats.input_chars}字`
+      : "";
+    meta.textContent = [
+      formatHistoryTime(item.created_at),
+      `${backendLabel} ${modelText}`,
+      chars,
+      elapsed,
+    ].filter(Boolean).join(" · ");
+
+    const stat = document.createElement("div");
+    stat.className = "history-item-stat";
+    stat.textContent = `人物 ${stats.characters ?? 0} · 关系 ${stats.relationships ?? 0} · 事件 ${stats.events ?? 0}`;
+
+    main.appendChild(title);
+    main.appendChild(meta);
+    main.appendChild(stat);
+
+    const actions = document.createElement("div");
+    actions.className = "history-item-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "btn-mini";
+    renameBtn.textContent = "改名";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameHistoryItem(item);
+    });
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn-mini btn-danger";
+    delBtn.textContent = "✕";
+    delBtn.title = "删除";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteHistoryItem(item);
+    });
+
+    actions.appendChild(renameBtn);
+    actions.appendChild(delBtn);
+
+    li.appendChild(main);
+    li.appendChild(actions);
+    li.addEventListener("click", () => loadHistoryItem(item.id));
+    els.historyList.appendChild(li);
+  });
+}
+
+async function loadHistoryItem(pid) {
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(pid)}`);
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    const proj = await resp.json();
+    // 把输入填回去；结果直接渲染到右侧
+    els.text.value = proj.input?.text || "";
+    els.charCount.textContent = els.text.value.length;
+    const result = proj.result || {};
+    renderHtmlHighlight(result.html || "");
+    renderCharacters(result.characters || []);
+    renderRelations(result.relationships || []);
+    renderEvents(result.events || []);
+    setStatus(`已加载工程「${proj.name}」（${proj.input?.text?.length || 0} 字，只读视图；重新抽取会创建新工程）`, "success");
+    closeHistoryModal();
+  } catch (err) {
+    console.error(err);
+    setStatus(`加载工程失败：${err.message}`, "error");
+  }
+}
+
+async function renameHistoryItem(item) {
+  const next = prompt("输入新名称：", item.name || "");
+  if (next === null) return;
+  const name = next.trim();
+  if (!name || name === item.name) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(item.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    await refreshHistorySummary();
+    renderHistoryList();
+  } catch (err) {
+    alert(`改名失败：${err.message}`);
+  }
+}
+
+async function deleteHistoryItem(item) {
+  if (!confirm(`确定删除工程「${item.name}」？此操作不可撤销。`)) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    await refreshHistorySummary();
+    renderHistoryList();
+  } catch (err) {
+    alert(`删除失败：${err.message}`);
+  }
+}
+
+async function openHistoryModal() {
+  els.historyModal.hidden = false;
+  await refreshHistorySummary();
+  renderHistoryList();
+}
+
+function closeHistoryModal() {
+  els.historyModal.hidden = true;
+}
+
+els.historyBtn.addEventListener("click", openHistoryModal);
+els.historyModal.querySelectorAll("[data-close]").forEach((el) => {
+  el.addEventListener("click", closeHistoryModal);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !els.historyModal.hidden) closeHistoryModal();
+});
+
 els.configSave.addEventListener("click", () => {
   flushFormToPreset();
   workingConfig.passes = Number(els.passes.value) || 1;
@@ -568,3 +750,4 @@ els.runBtn.addEventListener("click", runExtraction);
 
 // 初始化
 updateConfigSummary();
+refreshHistorySummary();

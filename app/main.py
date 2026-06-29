@@ -10,6 +10,8 @@ import queue
 import re
 import sys
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,8 +20,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import projects
 from .extractor import build_config_from_env, render_html, run_extraction
-from .schemas import Extraction, ExtractRequest, ExtractResponse
+from .schemas import Extraction, ExtractRequest, ExtractResponse, RenameRequest
 
 
 # Windows 终端默认 GBK，LangExtract 内部含中英符号（如 ✓）会编码失败，强制 UTF-8
@@ -231,6 +234,7 @@ async def extract_stream(req: ExtractRequest):
     # 用线程安全队列把 worker 线程的事件传给 async generator
     # 元素是 (kind, payload) 二元组，kind ∈ {"progress", "done", "error"}
     q: queue.Queue = queue.Queue()
+    started_at = time.monotonic()
 
     def worker():
         try:
@@ -292,12 +296,34 @@ async def extract_stream(req: ExtractRequest):
                 except Exception as exc:
                     logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
                     html = ""
+
+                # 抽取成功才落盘——失败的输入留着也没用
+                elapsed = round(time.monotonic() - started_at, 2)
+                project = _build_project(
+                    req=req,
+                    cfg=cfg,
+                    extractions=extractions,
+                    html=html,
+                    characters=characters,
+                    relationships=relationships,
+                    events=events,
+                    elapsed=elapsed,
+                )
+                try:
+                    projects.save_project(project)
+                    project_id = project["id"]
+                except Exception:
+                    logger.exception("工程落盘失败")
+                    project_id = None
+
                 yield _sse("done", {
                     "extractions": [e.model_dump() for e in extractions],
                     "html": html,
                     "characters": characters,
                     "relationships": relationships,
                     "events": events,
+                    "project_id": project_id,
+                    "project_name": project["name"] if project_id else None,
                 })
                 return
 
@@ -309,6 +335,88 @@ async def extract_stream(req: ExtractRequest):
             "X-Accel-Buffering": "no",  # 关掉 nginx 缓冲，事件即时下发
         },
     )
+
+
+def _build_project(
+    *,
+    req: ExtractRequest,
+    cfg,
+    extractions: list[Extraction],
+    html: str,
+    characters: list[str],
+    relationships: list[dict],
+    events: list[dict],
+    elapsed: float,
+) -> dict:
+    """组装一份完整工程 JSON，落盘前的最后一步。"""
+    now = datetime.now()
+    snapshot = projects.make_preset_snapshot(
+        backend=cfg.backend,
+        model=cfg.model_id,
+        base_url=cfg.base_url,
+        passes=cfg.extraction_passes,
+        char_buffer=cfg.max_char_buffer,
+        preset_name=req.preset_name,
+    )
+    return {
+        "id": projects.generate_id(),
+        "name": projects.auto_name(req.text, now),
+        "created_at": now.isoformat(timespec="seconds"),
+        "input": {
+            "text": req.text,
+            "preset_snapshot": snapshot,
+            "passes": cfg.extraction_passes,
+            "char_buffer": cfg.max_char_buffer,
+        },
+        "result": {
+            "extractions": [e.model_dump() for e in extractions],
+            "html": html,
+            "characters": characters,
+            "relationships": relationships,
+            "events": events,
+        },
+        "stats": {
+            "elapsed_sec": elapsed,
+            "input_chars": len(req.text),
+            "characters": len(characters),
+            "relationships": len(relationships),
+            "events": len(events),
+        },
+    }
+
+
+@app.get("/api/projects")
+def projects_list() -> list[dict]:
+    return projects.list_projects()
+
+
+@app.get("/api/projects/{pid}")
+def projects_get(pid: str) -> dict:
+    if not projects.is_valid_id(pid):
+        raise HTTPException(status_code=400, detail="非法 project id")
+    proj = projects.load_project(pid)
+    if not proj:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return proj
+
+
+@app.patch("/api/projects/{pid}")
+def projects_rename(pid: str, body: RenameRequest) -> dict:
+    if not projects.is_valid_id(pid):
+        raise HTTPException(status_code=400, detail="非法 project id")
+    summary = projects.rename_project(pid, body.name.strip())
+    if not summary:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return summary
+
+
+@app.delete("/api/projects/{pid}")
+def projects_delete(pid: str) -> dict:
+    if not projects.is_valid_id(pid):
+        raise HTTPException(status_code=400, detail="非法 project id")
+    if not projects.delete_project(pid):
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return {"ok": True}
 
 
 @app.post("/api/extract", response_model=ExtractResponse)

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>StoryX-Ray · 小说人物关系抽取</title>
-<link rel="stylesheet" href="/static/style.css?v=3" />
+<link rel="stylesheet" href="/static/style.css?v=4" />
 </head>
 <body>
 <header class="topbar">
@@ -16,6 +16,11 @@
     </div>
   </div>
   <div class="topbar-actions">
+    <button id="open-history" type="button" class="btn-ghost" title="历史记录">
+      <span class="icon">🗂</span>
+      <span class="label">历史记录</span>
+      <span id="history-summary" class="config-summary">0 条</span>
+    </button>
     <button id="open-config" type="button" class="btn-ghost" title="模型配置">
       <span class="icon">⚙</span>
       <span class="label">模型配置</span>
@@ -162,6 +167,28 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=3"></script>
+<!-- 历史记录弹窗 -->
+<div id="history-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-dialog modal-wide" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <header class="modal-header">
+      <h2 id="history-title">历史记录</h2>
+      <button class="modal-close" type="button" data-close aria-label="关闭">✕</button>
+    </header>
+
+    <div class="modal-body">
+      <p class="modal-hint">每次抽取成功后会自动保存为一份工程，包含输入文本与抽取结果。点击条目加载到主界面查看，加载后修改输入再抽取会创建新工程，原工程不变。</p>
+
+      <ul id="history-list" class="history-list"></ul>
+      <p id="history-empty" class="empty-tip" hidden>还没有历史记录，先跑一次抽取吧。</p>
+    </div>
+
+    <footer class="modal-footer">
+      <button class="btn-ghost" type="button" data-close>关闭</button>
+    </footer>
+  </div>
+</div>
+
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

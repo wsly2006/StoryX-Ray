@@ -15,6 +15,7 @@ class ExtractRequest(BaseModel):
     model: str | None = Field(default=None, description="模型 ID，留空走环境变量默认值")
     api_key: str | None = Field(default=None, description="API Key，留空走环境变量")
     base_url: str | None = Field(default=None, description="自定义 base_url（Ollama/OpenAI 兼容）")
+    preset_name: str | None = Field(default=None, description="预设名，用于保存到工程历史")
     extraction_passes: int = Field(default=1, ge=1, le=5, description="多轮抽取次数，提高召回")
     max_char_buffer: int = Field(default=1500, ge=200, le=8000, description="单次请求的最大字符窗口")
 
@@ -32,3 +33,7 @@ class ExtractResponse(BaseModel):
     characters: list[str]
     relationships: list[dict[str, Any]]
     events: list[dict[str, Any]]
+
+
+class RenameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)

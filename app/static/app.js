@@ -18,6 +18,10 @@ const els = {
   charBuffer: $("#char-buffer"),
   runBtn: $("#run-btn"),
   status: $("#status"),
+  progress: $("#progress"),
+  progressBar: $("#progress-bar"),
+  progressText: $("#progress-text"),
+  progressLog: $("#progress-log"),
   htmlWrap: $("#html-frame-wrap"),
   charactersList: $("#characters-list"),
   relationsBody: $("#relations-body"),
@@ -284,6 +288,30 @@ function setStatus(msg, kind = "") {
   els.status.className = `status ${kind}`;
 }
 
+function showProgress(show) {
+  els.progress.hidden = !show;
+  if (!show) {
+    els.progressBar.style.width = "0%";
+    els.progressText.textContent = "";
+    els.progressLog.textContent = "";
+  }
+}
+
+function setProgress(current, total, hint = "") {
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  els.progressBar.style.width = pct + "%";
+  els.progressText.textContent = hint
+    ? `${pct}% · ${current}/${total} · ${hint}`
+    : `${pct}% · ${current}/${total}`;
+}
+
+function appendProgressLog(line) {
+  // 只留最近 6 行，避免越堆越长
+  const prev = els.progressLog.textContent.split("\n").filter(Boolean);
+  prev.push(line);
+  els.progressLog.textContent = prev.slice(-6).join("\n");
+}
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -378,36 +406,117 @@ async function runExtraction() {
   };
 
   els.runBtn.disabled = true;
-  setStatus("正在调用 LLM 抽取……视模型与文本长度可能需要数十秒", "loading");
+  setStatus("正在调用 LLM 抽取……", "loading");
+  showProgress(true);
+  setProgress(0, 1, "准备中");
+
+  const started = Date.now();
 
   try {
-    const resp = await fetch("/api/extract", {
+    const resp = await fetch("/api/extract/stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(payload),
     });
 
-    if (!resp.ok) {
+    if (!resp.ok || !resp.body) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
 
-    const data = await resp.json();
-    renderHtmlHighlight(data.html);
-    renderCharacters(data.characters || []);
-    renderRelations(data.relationships || []);
-    renderEvents(data.events || []);
-
-    setStatus(
-      `完成：人物 ${data.characters.length} 个，关系 ${data.relationships.length} 条，事件 ${data.events.length} 条`,
-      "success"
-    );
+    await consumeSse(resp.body, started);
   } catch (err) {
     console.error(err);
     setStatus(`抽取失败：${err.message}`, "error");
+    showProgress(false);
   } finally {
     els.runBtn.disabled = false;
   }
+}
+
+async function consumeSse(stream, started) {
+  // 手写 SSE 解析：EventSource 不支持 POST，所以走 fetch+ReadableStream
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  let estimatedTotal = 0;
+
+  const handleEvent = (event, data) => {
+    let payload = null;
+    try {
+      payload = data ? JSON.parse(data) : null;
+    } catch (e) {
+      console.warn("SSE 解析失败", event, data);
+      return;
+    }
+
+    if (event === "init") {
+      estimatedTotal = payload.estimated_total || 0;
+      setProgress(0, estimatedTotal, `${payload.estimated_chunks} 个分片 × ${payload.passes} 轮`);
+      return;
+    }
+
+    if (event === "progress") {
+      // 后端解析出的 current/total 可能是分片维度的，比预估总量小；以两者较大者为基数
+      const total = Math.max(payload.total || 0, estimatedTotal);
+      setProgress(payload.current, total);
+      if (payload.raw) appendProgressLog(payload.raw);
+      return;
+    }
+
+    if (event === "log") {
+      if (payload.raw) appendProgressLog(payload.raw);
+      return;
+    }
+
+    if (event === "error") {
+      throw new Error(payload.detail || "服务端抽取失败");
+    }
+
+    if (event === "done") {
+      setProgress(estimatedTotal || 1, estimatedTotal || 1, "完成");
+      renderHtmlHighlight(payload.html);
+      renderCharacters(payload.characters || []);
+      renderRelations(payload.relationships || []);
+      renderEvents(payload.events || []);
+
+      const cost = ((Date.now() - started) / 1000).toFixed(1);
+      setStatus(
+        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条`,
+        "success"
+      );
+      // 进度条停留 1 秒再收，给用户视觉确认
+      setTimeout(() => showProgress(false), 1000);
+      return;
+    }
+  };
+
+  // SSE 帧用空行分隔；逐帧从缓冲里切出来
+  const flushFrames = () => {
+    let sepIdx;
+    while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, sepIdx);
+      buf = buf.slice(sepIdx + 2);
+      let event = "message";
+      let dataLines = [];
+      for (const line of frame.split("\n")) {
+        if (!line || line.startsWith(":")) continue;  // 注释/心跳行
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      handleEvent(event, dataLines.join("\n"));
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    flushFrames();
+  }
+  // 流结束时把残留帧再过一次
+  buf += "\n\n";
+  flushFrames();
 }
 
 // Tab 切换

@@ -80,12 +80,14 @@ def _build_kwargs(cfg: ExtractConfig) -> dict:
     raise ValueError(f"未知后端: {cfg.backend}")
 
 
-def run_extraction(text: str, cfg: ExtractConfig):
-    """执行抽取，返回 AnnotatedDocument。"""
+def run_extraction(text: str, cfg: ExtractConfig, writer=None):
+    """执行抽取，返回 AnnotatedDocument。
+
+    writer：可选的 file-like，把 langextract 的 stdout/stderr 重定向到这里。
+    默认仍然丢弃，给老调用方保留原行为；SSE 路径会传一个解析进度的 writer 进来。
+    """
     kwargs = _build_kwargs(cfg)
-    # langextract 的进度（含 ✓ 与 tqdm 进度条）会写 stdout/stderr，
-    # Windows 默认 GBK 终端会编码失败，统一吞掉。
-    sink = io.StringIO()
+    sink = writer if writer is not None else io.StringIO()
     with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
         return lx.extract(text_or_documents=text, **kwargs)
 

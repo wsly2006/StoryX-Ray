@@ -1,15 +1,21 @@
 """FastAPI 入口：提供抽取 API 与静态前端。"""
 from __future__ import annotations
 
+import asyncio
 import ipaddress
+import json
 import logging
+import math
+import queue
+import re
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .extractor import build_config_from_env, render_html, run_extraction
@@ -112,38 +118,9 @@ def _summarize(extractions: list[Extraction]) -> tuple[list[str], list[dict], li
     return characters, relationships, events
 
 
-@app.post("/api/extract", response_model=ExtractResponse)
-def extract(req: ExtractRequest) -> ExtractResponse:
-    _validate_base_url(req.base_url)
-
-    cfg = build_config_from_env(
-        backend=req.backend,
-        overrides={
-            "model": req.model,
-            "api_key": req.api_key,
-            "base_url": req.base_url,
-        },
-    )
-    cfg.extraction_passes = req.extraction_passes
-    cfg.max_char_buffer = req.max_char_buffer
-
-    # 校验密钥：本地后端不需要，云端必需
-    if req.backend in {"gemini", "openai", "deepseek"} and not cfg.api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{req.backend} 后端需要 API Key，请在 .env 或 UI 中填写。",
-        )
-
-    logger.info("开始抽取: backend=%s model=%s chars=%d", cfg.backend, cfg.model_id, len(req.text))
-
-    try:
-        annotated = run_extraction(req.text, cfg)
-    except Exception:
-        # 异常详情可能含密钥片段或内网信息，仅记日志，不回显
-        logger.exception("抽取失败")
-        raise HTTPException(status_code=500, detail="抽取失败，请查看服务端日志") from None
-
-    extractions = [
+def _to_extractions(annotated) -> list[Extraction]:
+    """统一把 AnnotatedDocument 转成 Pydantic 模型列表。"""
+    return [
         Extraction(
             extraction_class=e.extraction_class,
             extraction_text=e.extraction_text,
@@ -157,6 +134,214 @@ def extract(req: ExtractRequest) -> ExtractResponse:
         for e in (annotated.extractions or [])
     ]
 
+
+class _ProgressWriter:
+    """把 langextract 内部的 stdout/stderr 切成进度行，回调出去。
+
+    tqdm 用 \\r 覆盖同一行，所以按 \\r 与 \\n 都切；空白行丢掉。
+    """
+
+    def __init__(self, on_line):
+        self.on_line = on_line
+        self._buf = ""
+
+    def write(self, s):
+        if not s:
+            return 0
+        self._buf += s
+        while True:
+            # 找最早出现的 \r 或 \n，二者都视作一行结束
+            r_pos = self._buf.find("\r")
+            n_pos = self._buf.find("\n")
+            if r_pos == -1 and n_pos == -1:
+                break
+            if r_pos == -1:
+                pos = n_pos
+            elif n_pos == -1:
+                pos = r_pos
+            else:
+                pos = min(r_pos, n_pos)
+            line = self._buf[:pos].strip()
+            self._buf = self._buf[pos + 1 :]
+            if line:
+                try:
+                    self.on_line(line)
+                except Exception:
+                    # writer 不能往外抛，否则会破坏 langextract 的执行栈
+                    logger.exception("进度回调异常")
+        return len(s)
+
+    def flush(self):
+        pass
+
+
+# tqdm 行里抓 n/total 数字对，例如 "30%|███| 3/10 [00:01<00:02]"
+_TQDM_PAT = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+
+
+def _parse_progress(line: str) -> dict | None:
+    """从一行 tqdm/langextract 输出里抠出 current/total。"""
+    m = _TQDM_PAT.search(line)
+    if not m:
+        return None
+    cur, tot = int(m.group(1)), int(m.group(2))
+    if tot <= 0 or cur > tot * 10:  # 异常值挡掉，避免 1234/3 这种解析错位
+        return None
+    return {"current": cur, "total": tot}
+
+
+def _sse(event: str, payload: dict) -> bytes:
+    """打包成 SSE 帧：event + data 一行 JSON + 空行。"""
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+
+
+@app.post("/api/extract/stream")
+async def extract_stream(req: ExtractRequest):
+    """SSE 版抽取：边跑边推进度。"""
+    _validate_base_url(req.base_url)
+
+    cfg = build_config_from_env(
+        backend=req.backend,
+        overrides={
+            "model": req.model,
+            "api_key": req.api_key,
+            "base_url": req.base_url,
+        },
+    )
+    cfg.extraction_passes = req.extraction_passes
+    cfg.max_char_buffer = req.max_char_buffer
+
+    if req.backend in {"gemini", "openai", "deepseek"} and not cfg.api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.backend} 后端需要 API Key，请在 .env 或 UI 中填写。",
+        )
+
+    text = req.text
+    # 预估总分片数：langextract 按 max_char_buffer 切片，每片一次 LLM
+    estimated_chunks = max(1, math.ceil(len(text) / max(cfg.max_char_buffer, 1)))
+    estimated_total = estimated_chunks * max(cfg.extraction_passes, 1)
+
+    logger.info(
+        "开始抽取(SSE): backend=%s model=%s chars=%d chunks=%d passes=%d",
+        cfg.backend, cfg.model_id, len(text), estimated_chunks, cfg.extraction_passes,
+    )
+
+    # 用线程安全队列把 worker 线程的事件传给 async generator
+    # 元素是 (kind, payload) 二元组，kind ∈ {"progress", "done", "error"}
+    q: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            writer = _ProgressWriter(lambda line: q.put(("progress", line)))
+            annotated = run_extraction(text, cfg, writer=writer)
+            q.put(("done", annotated))
+        except Exception as exc:
+            # 异常详情可能含密钥片段或内网信息，仅记日志，不回显
+            logger.exception("抽取失败")
+            q.put(("error", exc))
+
+    thread = threading.Thread(target=worker, name="extract-worker", daemon=True)
+    thread.start()
+
+    async def event_gen():
+        # 先发一个 init 事件告诉前端预估总量
+        yield _sse("init", {
+            "text_length": len(text),
+            "estimated_chunks": estimated_chunks,
+            "passes": cfg.extraction_passes,
+            "estimated_total": estimated_total,
+            "model": cfg.model_id,
+            "backend": cfg.backend,
+        })
+
+        last_progress = None
+        while True:
+            # 阻塞 get 放线程池，async 主循环不被卡住
+            try:
+                kind, payload = await asyncio.to_thread(q.get, True, 60)
+            except queue.Empty:
+                # 60 秒没消息发个心跳，防止反代/浏览器超时断连
+                yield b": keepalive\n\n"
+                continue
+
+            if kind == "progress":
+                parsed = _parse_progress(payload)
+                if parsed:
+                    # 进度数字解析成功才推；相同的不重复发
+                    sig = (parsed["current"], parsed["total"])
+                    if sig != last_progress:
+                        last_progress = sig
+                        yield _sse("progress", {**parsed, "raw": payload})
+                else:
+                    # 解析不出 n/total 的就当 log 行原样推（如阶段提示）
+                    yield _sse("log", {"raw": payload})
+                continue
+
+            if kind == "error":
+                yield _sse("error", {"detail": "抽取失败，请查看服务端日志"})
+                return
+
+            if kind == "done":
+                annotated = payload
+                extractions = _to_extractions(annotated)
+                characters, relationships, events = _summarize(extractions)
+                try:
+                    html = render_html(annotated)
+                except Exception as exc:
+                    logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
+                    html = ""
+                yield _sse("done", {
+                    "extractions": [e.model_dump() for e in extractions],
+                    "html": html,
+                    "characters": characters,
+                    "relationships": relationships,
+                    "events": events,
+                })
+                return
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 关掉 nginx 缓冲，事件即时下发
+        },
+    )
+
+
+@app.post("/api/extract", response_model=ExtractResponse)
+def extract(req: ExtractRequest) -> ExtractResponse:
+    """非流式入口，保留给脚本/CLI 用；UI 走 /api/extract/stream。"""
+    _validate_base_url(req.base_url)
+
+    cfg = build_config_from_env(
+        backend=req.backend,
+        overrides={
+            "model": req.model,
+            "api_key": req.api_key,
+            "base_url": req.base_url,
+        },
+    )
+    cfg.extraction_passes = req.extraction_passes
+    cfg.max_char_buffer = req.max_char_buffer
+
+    if req.backend in {"gemini", "openai", "deepseek"} and not cfg.api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.backend} 后端需要 API Key，请在 .env 或 UI 中填写。",
+        )
+
+    logger.info("开始抽取: backend=%s model=%s chars=%d", cfg.backend, cfg.model_id, len(req.text))
+
+    try:
+        annotated = run_extraction(req.text, cfg)
+    except Exception:
+        logger.exception("抽取失败")
+        raise HTTPException(status_code=500, detail="抽取失败，请查看服务端日志") from None
+
+    extractions = _to_extractions(annotated)
     characters, relationships, events = _summarize(extractions)
 
     try:

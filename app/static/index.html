@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>StoryX-Ray · 小说人物关系抽取</title>
-<link rel="stylesheet" href="/static/style.css?v=2" />
+<link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
 <header class="topbar">
@@ -34,6 +34,12 @@
 
     <button id="run-btn" type="button" class="primary">开始抽取</button>
     <div id="status" class="status"></div>
+
+    <div id="progress" class="progress" hidden>
+      <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
+      <div id="progress-text" class="progress-text"></div>
+      <pre id="progress-log" class="progress-log"></pre>
+    </div>
   </section>
 
   <!-- 右：结果 -->
@@ -156,6 +162,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

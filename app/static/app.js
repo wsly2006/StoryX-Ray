@@ -18,6 +18,8 @@ const els = {
   charBuffer: $("#char-buffer"),
   runBtn: $("#run-btn"),
   status: $("#status"),
+  saveBar: $("#save-bar"),
+  saveBtn: $("#save-btn"),
   progress: $("#progress"),
   progressBar: $("#progress-bar"),
   progressText: $("#progress-text"),
@@ -375,7 +377,7 @@ function renderHtmlHighlight(html) {
     els.htmlWrap.innerHTML = `<p class="empty-tip">本次未生成高亮视图。</p>`;
     return;
   }
-  // LangExtract 渲染的 HTML 自带样式与 JS，用 iframe 隔离避免污染主页面
+  // 抽取结果的高亮 HTML 自带样式与 JS，用 iframe 隔离避免污染主页面
   // 注意：sandbox 不能同时开 allow-scripts 和 allow-same-origin——iframe 可借此移除自身 sandbox
   els.htmlWrap.innerHTML = "";
   const iframe = document.createElement("iframe");
@@ -410,6 +412,21 @@ async function runExtraction() {
     extraction_passes: workingConfig.passes || 1,
     max_char_buffer: workingConfig.charBuffer || 1500,
   };
+
+  // 记下这次抽取的输入，done 回来时拼草稿要用——response 不会重复带回这些
+  lastExtractText = text;
+  lastExtractPasses = workingConfig.passes || 1;
+  lastExtractCharBuffer = workingConfig.charBuffer || 1500;
+  lastExtractSnapshot = {
+    name: preset.name || "",
+    backend: preset.backend,
+    model: preset.model || "",
+    base_url: preset.baseUrl || "",
+    passes: lastExtractPasses,
+    char_buffer: lastExtractCharBuffer,
+  };
+  // 重新抽取就丢掉之前未保存的草稿
+  clearDraft();
 
   els.runBtn.disabled = true;
   setStatus("正在调用 LLM 抽取……", "loading");
@@ -487,13 +504,25 @@ async function consumeSse(stream, started) {
       renderEvents(payload.events || []);
 
       const cost = ((Date.now() - started) / 1000).toFixed(1);
-      const saveMsg = payload.project_id ? `，已保存为「${payload.project_name}」` : "";
       setStatus(
-        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条${saveMsg}`,
+        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条`,
         "success"
       );
-      // 后台刷新历史列表，给顶栏摘要更新数字
-      refreshHistorySummary();
+
+      // 把这次的输入+结果做成一份待保存草稿；点保存按钮才真正落盘
+      stashDraft({
+        text: lastExtractText,
+        preset_snapshot: lastExtractSnapshot,
+        passes: lastExtractPasses,
+        char_buffer: lastExtractCharBuffer,
+        elapsed_sec: Number((payload.elapsed_sec ?? cost)) || 0,
+        extractions: payload.extractions || [],
+        html: payload.html || "",
+        characters: payload.characters || [],
+        relationships: payload.relationships || [],
+        events: payload.events || [],
+      });
+
       // 进度条停留 1 秒再收，给用户视觉确认
       setTimeout(() => showProgress(false), 1000);
       return;
@@ -561,6 +590,52 @@ els.presetAdd.addEventListener("click", addPreset);
 
 // ---------- 历史记录 ----------
 let historyCache = [];
+
+// ---------- 未保存草稿 ----------
+// 抽取完成 → 草稿暂存到这里；点保存才落盘；新抽取或加载历史时清空
+let draftPayload = null;
+// 最近一次抽取的输入参数（done 事件本身不带这些信息）
+let lastExtractText = "";
+let lastExtractPasses = 1;
+let lastExtractCharBuffer = 1500;
+let lastExtractSnapshot = null;
+
+function stashDraft(payload) {
+  draftPayload = payload;
+  els.saveBar.hidden = false;
+  els.saveBtn.disabled = false;
+  els.saveBtn.textContent = "保存为工程";
+}
+
+function clearDraft() {
+  draftPayload = null;
+  els.saveBar.hidden = true;
+}
+
+async function saveDraft() {
+  if (!draftPayload) return;
+  els.saveBtn.disabled = true;
+  els.saveBtn.textContent = "保存中…";
+  try {
+    const resp = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draftPayload),
+    });
+    if (!resp.ok) {
+      throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    }
+    const data = await resp.json();
+    setStatus(`已保存为工程「${data.name}」`, "success");
+    clearDraft();
+    refreshHistorySummary();
+  } catch (err) {
+    console.error(err);
+    setStatus(`保存失败：${err.message}`, "error");
+    els.saveBtn.disabled = false;
+    els.saveBtn.textContent = "重试保存";
+  }
+}
 
 async function refreshHistorySummary() {
   try {
@@ -675,6 +750,8 @@ async function loadHistoryItem(pid) {
     renderCharacters(result.characters || []);
     renderRelations(result.relationships || []);
     renderEvents(result.events || []);
+    // 加载的是已存工程，不是新抽取，自然没有待保存草稿
+    clearDraft();
     setStatus(`已加载工程「${proj.name}」（${proj.input?.text?.length || 0} 字，只读视图；重新抽取会创建新工程）`, "success");
     closeHistoryModal();
   } catch (err) {
@@ -747,6 +824,7 @@ els.text.addEventListener("input", () => {
   els.charCount.textContent = els.text.value.length;
 });
 els.runBtn.addEventListener("click", runExtraction);
+els.saveBtn.addEventListener("click", saveDraft);
 
 // 初始化
 updateConfigSummary();

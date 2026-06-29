@@ -1,14 +1,14 @@
 # StoryX-Ray
 
-> 基于 [LangExtract](https://github.com/google/langextract) 的小说人物关系抽取工具。
+> 小说人物关系与剧情结构抽取工具。
 > 粘贴一段中文小说，自动识别 **人物 / 关系 / 关键事件**，并把抽取结果对应回原文高亮展示。
 
 ## 功能
 
 - 📖 **结构化抽取**：人物、二元关系（含关系类型）、关键事件
-- 🎯 **原文溯源**：每条抽取都能定位回原文片段（LangExtract 原生 HTML 高亮）
+- 🎯 **原文溯源**：每条抽取都能定位回原文片段，HTML 高亮展示
 - 🔌 **多后端可切换**：
-  - Gemini API（LangExtract 官方推荐）
+  - Gemini API
   - Ollama 本地模型（无需密钥，离线可用）
   - **DeepSeek V4**（`deepseek-v4-flash` / `deepseek-v4-pro`，国内访问友好，价格便宜）
   - OpenAI 兼容接口（Kimi / 智谱 / 自部署 等通用入口）
@@ -20,7 +20,7 @@
 StoryX-Ray/
 ├── app/
 │   ├── main.py          # FastAPI 入口
-│   ├── extractor.py     # LangExtract 多后端封装
+│   ├── extractor.py     # 抽取引擎与多后端封装
 │   ├── prompts.py       # Prompt 与 few-shot 示例
 │   ├── schemas.py       # 请求/响应模型
 │   └── static/          # 前端单页（HTML/CSS/JS）
@@ -52,7 +52,7 @@ DEEPSEEK_API_KEY=你的密钥
 
 | 后端 | 必填项 | 默认模型 | 说明 |
 |---|---|---|---|
-| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | LangExtract 官方推荐 |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` | Google 官方 API |
 | `ollama` | 本地已运行 Ollama | `qwen2.5:7b` | 默认 `http://localhost:11434` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | DeepSeek V4，性价比最高；如需更强可换 `deepseek-v4-pro` |
 | `openai` | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `gpt-4o-mini` | Kimi / 智谱 / 自部署 等通用入口 |

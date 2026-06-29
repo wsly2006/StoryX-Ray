@@ -37,3 +37,18 @@ class ExtractResponse(BaseModel):
 
 class RenameRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
+
+
+class SaveProjectRequest(BaseModel):
+    """前端把刚抽取完的草稿发回来落盘——id/时间戳/统计由后端生成。"""
+    text: str = Field(..., min_length=1, max_length=200_000)
+    name: str | None = Field(default=None, max_length=200, description="留空走自动命名")
+    preset_snapshot: dict[str, Any] = Field(default_factory=dict)
+    passes: int = Field(default=1, ge=1, le=5)
+    char_buffer: int = Field(default=1500, ge=200, le=8000)
+    elapsed_sec: float = Field(default=0.0, ge=0)
+    extractions: list[Extraction] = Field(default_factory=list)
+    html: str = Field(default="")
+    characters: list[str] = Field(default_factory=list)
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)

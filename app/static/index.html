@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>StoryX-Ray · 小说人物关系抽取</title>
-<link rel="stylesheet" href="/static/style.css?v=4" />
+<link rel="stylesheet" href="/static/style.css?v=5" />
 </head>
 <body>
 <header class="topbar">
@@ -12,7 +12,7 @@
     <span class="logo">📖</span>
     <div>
       <h1>StoryX-Ray</h1>
-      <p class="subtitle">基于 LangExtract 的小说人物关系抽取</p>
+      <p class="subtitle">小说人物关系与剧情结构抽取工具</p>
     </div>
   </div>
   <div class="topbar-actions">
@@ -26,7 +26,6 @@
       <span class="label">模型配置</span>
       <span id="config-summary" class="config-summary">未配置</span>
     </button>
-    <a class="github" href="https://github.com/google/langextract" target="_blank" rel="noopener noreferrer">LangExtract ↗</a>
   </div>
 </header>
 
@@ -39,6 +38,11 @@
 
     <button id="run-btn" type="button" class="primary">开始抽取</button>
     <div id="status" class="status"></div>
+
+    <div id="save-bar" class="save-bar" hidden>
+      <span class="save-bar-text">本次结果尚未保存</span>
+      <button id="save-btn" type="button" class="btn-mini">保存为工程</button>
+    </div>
 
     <div id="progress" class="progress" hidden>
       <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
@@ -58,7 +62,7 @@
 
     <div id="tab-highlight" class="tab-pane active">
       <div id="html-frame-wrap" class="frame-wrap">
-        <p class="empty-tip">抽取完成后，这里会展示 LangExtract 原生高亮视图。</p>
+        <p class="empty-tip">抽取完成后，这里会展示原文高亮视图。</p>
       </div>
     </div>
 
@@ -189,6 +193,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

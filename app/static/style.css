@@ -419,6 +419,23 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 .status.error { color: var(--error); }
 .status.success { color: var(--success); }
 
+/* 未保存提示条 */
+.save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #92400e;
+}
+.save-bar-text { line-height: 1.4; }
+.save-bar .btn-mini { padding: 4px 12px; }
+
 /* 抽取进度条 */
 .progress {
   margin-top: 12px;

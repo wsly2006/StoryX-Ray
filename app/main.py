@@ -22,7 +22,13 @@ from fastapi.staticfiles import StaticFiles
 
 from . import projects
 from .extractor import build_config_from_env, render_html, run_extraction
-from .schemas import Extraction, ExtractRequest, ExtractResponse, RenameRequest
+from .schemas import (
+    Extraction,
+    ExtractRequest,
+    ExtractResponse,
+    RenameRequest,
+    SaveProjectRequest,
+)
 
 
 # Windows 终端默认 GBK，LangExtract 内部含中英符号（如 ✓）会编码失败，强制 UTF-8
@@ -297,33 +303,15 @@ async def extract_stream(req: ExtractRequest):
                     logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
                     html = ""
 
-                # 抽取成功才落盘——失败的输入留着也没用
+                # 保存改成用户手动触发，这里只把抽取耗时一并回前端
                 elapsed = round(time.monotonic() - started_at, 2)
-                project = _build_project(
-                    req=req,
-                    cfg=cfg,
-                    extractions=extractions,
-                    html=html,
-                    characters=characters,
-                    relationships=relationships,
-                    events=events,
-                    elapsed=elapsed,
-                )
-                try:
-                    projects.save_project(project)
-                    project_id = project["id"]
-                except Exception:
-                    logger.exception("工程落盘失败")
-                    project_id = None
-
                 yield _sse("done", {
                     "extractions": [e.model_dump() for e in extractions],
                     "html": html,
                     "characters": characters,
                     "relationships": relationships,
                     "events": events,
-                    "project_id": project_id,
-                    "project_name": project["name"] if project_id else None,
+                    "elapsed_sec": elapsed,
                 })
                 return
 
@@ -337,50 +325,33 @@ async def extract_stream(req: ExtractRequest):
     )
 
 
-def _build_project(
-    *,
-    req: ExtractRequest,
-    cfg,
-    extractions: list[Extraction],
-    html: str,
-    characters: list[str],
-    relationships: list[dict],
-    events: list[dict],
-    elapsed: float,
-) -> dict:
-    """组装一份完整工程 JSON，落盘前的最后一步。"""
+def _build_project(req: SaveProjectRequest) -> dict:
+    """把前端发回的草稿组装成完整工程 JSON。id/时间/名字都由后端定。"""
     now = datetime.now()
-    snapshot = projects.make_preset_snapshot(
-        backend=cfg.backend,
-        model=cfg.model_id,
-        base_url=cfg.base_url,
-        passes=cfg.extraction_passes,
-        char_buffer=cfg.max_char_buffer,
-        preset_name=req.preset_name,
-    )
+    name = (req.name or "").strip() or projects.auto_name(req.text, now)
     return {
         "id": projects.generate_id(),
-        "name": projects.auto_name(req.text, now),
+        "name": name,
         "created_at": now.isoformat(timespec="seconds"),
         "input": {
             "text": req.text,
-            "preset_snapshot": snapshot,
-            "passes": cfg.extraction_passes,
-            "char_buffer": cfg.max_char_buffer,
+            "preset_snapshot": req.preset_snapshot or {},
+            "passes": req.passes,
+            "char_buffer": req.char_buffer,
         },
         "result": {
-            "extractions": [e.model_dump() for e in extractions],
-            "html": html,
-            "characters": characters,
-            "relationships": relationships,
-            "events": events,
+            "extractions": [e.model_dump() for e in req.extractions],
+            "html": req.html,
+            "characters": req.characters,
+            "relationships": req.relationships,
+            "events": req.events,
         },
         "stats": {
-            "elapsed_sec": elapsed,
+            "elapsed_sec": req.elapsed_sec,
             "input_chars": len(req.text),
-            "characters": len(characters),
-            "relationships": len(relationships),
-            "events": len(events),
+            "characters": len(req.characters),
+            "relationships": len(req.relationships),
+            "events": len(req.events),
         },
     }
 
@@ -388,6 +359,19 @@ def _build_project(
 @app.get("/api/projects")
 def projects_list() -> list[dict]:
     return projects.list_projects()
+
+
+@app.post("/api/projects")
+def projects_create(body: SaveProjectRequest) -> dict:
+    """用户主动保存：前端把刚抽取完的草稿发过来，这里落盘。"""
+    project = _build_project(body)
+    try:
+        summary = projects.save_project(project)
+    except Exception:
+        logger.exception("工程落盘失败")
+        raise HTTPException(status_code=500, detail="保存失败，请查看服务端日志") from None
+    # 返回完整工程而不仅是概要，前端可以立刻把它当作"已加载"状态用
+    return {"id": project["id"], "name": project["name"], "summary": summary}
 
 
 @app.get("/api/projects/{pid}")

@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import projects
-from .extractor import build_config_from_env, render_html, run_extraction
+from .extractor import get_extractor
 from .schemas import (
     Extraction,
     ExtractRequest,
@@ -127,8 +127,8 @@ def _summarize(extractions: list[Extraction]) -> tuple[list[str], list[dict], li
     return characters, relationships, events
 
 
-def _to_extractions(annotated) -> list[Extraction]:
-    """统一把 AnnotatedDocument 转成 Pydantic 模型列表。"""
+def _to_extractions(result) -> list[Extraction]:
+    """把引擎返回的 ExtractionResult 中的抽取记录转成 Pydantic 模型列表。"""
     return [
         Extraction(
             extraction_class=e.extraction_class,
@@ -140,7 +140,7 @@ def _to_extractions(annotated) -> list[Extraction]:
                 else None
             ),
         )
-        for e in (annotated.extractions or [])
+        for e in (result.extractions or [])
     ]
 
 
@@ -210,7 +210,8 @@ async def extract_stream(req: ExtractRequest):
     """SSE 版抽取：边跑边推进度。"""
     _validate_base_url(req.base_url)
 
-    cfg = build_config_from_env(
+    engine = get_extractor()
+    cfg = engine.build_config(
         backend=req.backend,
         overrides={
             "model": req.model,
@@ -228,13 +229,13 @@ async def extract_stream(req: ExtractRequest):
         )
 
     text = req.text
-    # 预估总分片数：langextract 按 max_char_buffer 切片，每片一次 LLM
+    # 预估总分片数：当前引擎按 max_char_buffer 切片，每片一次 LLM
     estimated_chunks = max(1, math.ceil(len(text) / max(cfg.max_char_buffer, 1)))
     estimated_total = estimated_chunks * max(cfg.extraction_passes, 1)
 
     logger.info(
-        "开始抽取(SSE): backend=%s model=%s chars=%d chunks=%d passes=%d",
-        cfg.backend, cfg.model_id, len(text), estimated_chunks, cfg.extraction_passes,
+        "开始抽取(SSE): engine=%s backend=%s model=%s chars=%d chunks=%d passes=%d",
+        engine.name, cfg.backend, cfg.model_id, len(text), estimated_chunks, cfg.extraction_passes,
     )
 
     # 用线程安全队列把 worker 线程的事件传给 async generator
@@ -245,8 +246,8 @@ async def extract_stream(req: ExtractRequest):
     def worker():
         try:
             writer = _ProgressWriter(lambda line: q.put(("progress", line)))
-            annotated = run_extraction(text, cfg, writer=writer)
-            q.put(("done", annotated))
+            result = engine.extract(text, cfg, writer=writer)
+            q.put(("done", result))
         except Exception as exc:
             # 异常详情可能含密钥片段或内网信息，仅记日志，不回显
             logger.exception("抽取失败")
@@ -294,11 +295,11 @@ async def extract_stream(req: ExtractRequest):
                 return
 
             if kind == "done":
-                annotated = payload
-                extractions = _to_extractions(annotated)
+                result = payload
+                extractions = _to_extractions(result)
                 characters, relationships, events = _summarize(extractions)
                 try:
-                    html = render_html(annotated)
+                    html = engine.render_html(result)
                 except Exception as exc:
                     logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
                     html = ""
@@ -408,7 +409,8 @@ def extract(req: ExtractRequest) -> ExtractResponse:
     """非流式入口，保留给脚本/CLI 用；UI 走 /api/extract/stream。"""
     _validate_base_url(req.base_url)
 
-    cfg = build_config_from_env(
+    engine = get_extractor()
+    cfg = engine.build_config(
         backend=req.backend,
         overrides={
             "model": req.model,
@@ -425,19 +427,22 @@ def extract(req: ExtractRequest) -> ExtractResponse:
             detail=f"{req.backend} 后端需要 API Key，请在 .env 或 UI 中填写。",
         )
 
-    logger.info("开始抽取: backend=%s model=%s chars=%d", cfg.backend, cfg.model_id, len(req.text))
+    logger.info(
+        "开始抽取: engine=%s backend=%s model=%s chars=%d",
+        engine.name, cfg.backend, cfg.model_id, len(req.text),
+    )
 
     try:
-        annotated = run_extraction(req.text, cfg)
+        result = engine.extract(req.text, cfg)
     except Exception:
         logger.exception("抽取失败")
         raise HTTPException(status_code=500, detail="抽取失败，请查看服务端日志") from None
 
-    extractions = _to_extractions(annotated)
+    extractions = _to_extractions(result)
     characters, relationships, events = _summarize(extractions)
 
     try:
-        html = render_html(annotated)
+        html = engine.render_html(result)
     except Exception as exc:
         logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
         html = ""

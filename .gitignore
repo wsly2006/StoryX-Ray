@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 环境与密钥
+.env
+.env.local
+*.key
+
+# 抽取输出
+data/
+*.jsonl
+*.html
+!app/static/*.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code 本地配置（每个用户自行积累）
+.claude/
+CLAUDE.md

@@ -3,14 +3,20 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 import langextract as lx
+from langextract.factory import ModelConfig
 
 from ..prompts import EXAMPLES, PROMPT_DESCRIPTION
 from .base import Extractor, ExtractionResult
+
+
+logger = logging.getLogger("storyxray")
 
 
 # LangExtract 引擎支持的 LLM 后端
@@ -18,7 +24,8 @@ Backend = Literal["gemini", "ollama", "deepseek", "openai"]
 
 # DeepSeek 官方 OpenAI 兼容端点
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
+# DeepSeek 实际可用模型：deepseek-chat（V3）/ deepseek-reasoner（R1），原本默认的 v4-flash 不存在
+DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
 
 
 @dataclass
@@ -57,12 +64,21 @@ def _build_kwargs(cfg: LangExtractConfig) -> dict:
         }
 
     if cfg.backend in ("openai", "deepseek"):
-        # 两者都走 OpenAI 兼容协议，deepseek 仅是 base_url 预设
+        # 两者都走 OpenAI 兼容协议。
+        # 关键：DeepSeek 的 model_id 以 "deepseek" 开头，会被 LangExtract 的 model_id
+        # 正则路由强行送到 Ollama provider；这里用 config 显式指定 provider 绕开路由。
+        provider_kwargs = {
+            "api_key": cfg.api_key,
+        }
+        if cfg.base_url:
+            provider_kwargs["base_url"] = cfg.base_url
         return {
             **common,
-            "model_id": cfg.model_id,
-            "api_key": cfg.api_key,
-            "language_model_params": {"base_url": cfg.base_url},
+            "config": ModelConfig(
+                model_id=cfg.model_id,
+                provider="OpenAILanguageModel",
+                provider_kwargs=provider_kwargs,
+            ),
             "fence_output": True,
             "use_schema_constraints": False,
         }
@@ -91,7 +107,7 @@ class LangExtractEngine(Extractor):
             )
 
         if backend == "deepseek":
-            # 固定走官方 OpenAI 兼容端点，模型默认 v4-flash
+            # 固定走官方 OpenAI 兼容端点，模型默认 deepseek-chat
             return LangExtractConfig(
                 backend="deepseek",
                 model_id=overrides.get("model") or os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_MODEL),
@@ -113,8 +129,15 @@ class LangExtractEngine(Extractor):
         kwargs = _build_kwargs(cfg)
         # writer 为空时丢弃，避免 Windows GBK 终端因 ✓ 等字符编码失败
         sink = writer if writer is not None else io.StringIO()
+        # 给 lx.extract 卡 timing，配合 httpx INFO 日志看耗时分布到底在哪段
+        t0 = time.monotonic()
+        logger.info("lx.extract 开始: model=%s passes=%s buffer=%s",
+                    cfg.model_id, cfg.extraction_passes, cfg.max_char_buffer)
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             annotated = lx.extract(text_or_documents=text, **kwargs)
+        logger.info("lx.extract 结束: 耗时 %.2fs，原始抽取 %d 条",
+                    time.monotonic() - t0,
+                    len(annotated.extractions or []))
         return ExtractionResult(extractions=list(annotated.extractions or []), raw=annotated)
 
     def render_html(self, result: ExtractionResult) -> str:

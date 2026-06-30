@@ -378,15 +378,12 @@ function renderHtmlHighlight(html) {
     return;
   }
   // 抽取结果的高亮 HTML 自带样式与 JS，用 iframe 隔离避免污染主页面
-  // 注意：sandbox 不能同时开 allow-scripts 和 allow-same-origin——iframe 可借此移除自身 sandbox
+  // 走 srcdoc 而非 contentDocument.write：后者在 sandbox（无 allow-same-origin）下会触发跨源拒绝
   els.htmlWrap.innerHTML = "";
   const iframe = document.createElement("iframe");
   iframe.setAttribute("sandbox", "allow-scripts");
+  iframe.srcdoc = html;
   els.htmlWrap.appendChild(iframe);
-  const doc = iframe.contentDocument || iframe.contentWindow.document;
-  doc.open();
-  doc.write(html);
-  doc.close();
 }
 
 async function runExtraction() {

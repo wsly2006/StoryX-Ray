@@ -39,8 +39,24 @@ for stream in (sys.stdout, sys.stderr):
         pass
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+# 主 logger + 文件 handler：抽取流程涉及多线程 + stdout 重定向，落盘日志最可靠
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_LOG_FILE = _LOG_DIR / "storyxray.log"
+
+_fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(_fmt)
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_stream_handler, _file_handler], force=True)
+# LangExtract 内部用 logging，调 DEBUG 能看到分片/重试/HTTP 细节
+logging.getLogger("langextract").setLevel(logging.DEBUG)
+
 logger = logging.getLogger("storyxray")
+logger.info("日志写入: %s", _LOG_FILE)
 
 app = FastAPI(title="StoryX-Ray", description="小说人物关系抽取工具")
 
@@ -244,13 +260,22 @@ async def extract_stream(req: ExtractRequest):
     started_at = time.monotonic()
 
     def worker():
+        t0 = time.monotonic()
         try:
+            logger.info(
+                "worker 启动: text_len=%d max_char_buffer=%d passes=%d",
+                len(text), cfg.max_char_buffer, cfg.extraction_passes,
+            )
             writer = _ProgressWriter(lambda line: q.put(("progress", line)))
             result = engine.extract(text, cfg, writer=writer)
+            logger.info(
+                "worker 完成: 耗时 %.2fs，抽取 %d 条",
+                time.monotonic() - t0, len(result.extractions or []),
+            )
             q.put(("done", result))
         except Exception as exc:
             # 异常详情可能含密钥片段或内网信息，仅记日志，不回显
-            logger.exception("抽取失败")
+            logger.exception("worker 失败: 耗时 %.2fs", time.monotonic() - t0)
             q.put(("error", exc))
 
     thread = threading.Thread(target=worker, name="extract-worker", daemon=True)

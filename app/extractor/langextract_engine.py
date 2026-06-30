@@ -46,12 +46,14 @@ def _build_kwargs(cfg: LangExtractConfig) -> dict:
 
     if cfg.backend == "ollama":
         # 本地模型通常不支持 schema 约束，关掉避免报错
+        # timeout 默认 120s，本地大模型 + CPU 容易撞墙，放宽到 600s
         return {
             **common,
             "model_id": cfg.model_id,
             "model_url": cfg.base_url or "http://localhost:11434",
             "fence_output": False,
             "use_schema_constraints": False,
+            "language_model_params": {"timeout": 600},
         }
 
     if cfg.backend in ("openai", "deepseek"):

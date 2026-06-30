@@ -13,6 +13,7 @@ env/
 
 # 抽取输出
 data/
+logs/
 *.jsonl
 *.html
 !app/static/*.html

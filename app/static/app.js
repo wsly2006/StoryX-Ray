@@ -607,10 +607,17 @@ function stashDraft(payload) {
 function clearDraft() {
   draftPayload = null;
   els.saveBar.hidden = true;
+  // 保存成功后顺手还原按钮，避免下次显示时仍停在"保存中…"
+  els.saveBtn.disabled = false;
+  els.saveBtn.textContent = "保存为工程";
 }
 
 async function saveDraft() {
-  if (!draftPayload) return;
+  console.log("[StoryX-Ray] 点击保存", { hasDraft: !!draftPayload });
+  if (!draftPayload) {
+    setStatus("没有待保存的草稿，请先完成一次抽取", "error");
+    return;
+  }
   els.saveBtn.disabled = true;
   els.saveBtn.textContent = "保存中…";
   try {

@@ -435,6 +435,8 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 }
 .save-bar-text { line-height: 1.4; }
 .save-bar .btn-mini { padding: 4px 12px; }
+/* display:flex 会压过 [hidden] 默认的 display:none，单独补一条 */
+.save-bar[hidden] { display: none; }
 
 /* 抽取进度条 */
 .progress {

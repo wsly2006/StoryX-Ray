@@ -174,8 +174,9 @@ class LangExtractEngine(Extractor):
                 max_char_buffer=cfg.max_char_buffer,
                 # 我们自建 model 时已按后端裁剪 schema 约束，避免 lx 再警告
                 use_schema_constraints=False,
-                # tqdm banner 会被 writer 当日志行推给前端；后端已有自己的进度日志
-                show_progress=False,
+                # 打开 tqdm，前端进度条依赖 _ProgressWriter 从 tqdm 输出里解析 n/total；
+                # 开头的 banner 会以 log 事件落到进度框日志尾，不影响主进度
+                show_progress=True,
             )
         elapsed = time.monotonic() - t0
         summary = stats.summary()

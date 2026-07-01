@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>StoryX-Ray · 小说人物关系抽取</title>
-<link rel="stylesheet" href="/static/style.css?v=9" />
+<link rel="stylesheet" href="/static/style.css?v=10" />
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 </head>
 <body>
@@ -17,6 +17,11 @@
     </div>
   </div>
   <div class="topbar-actions">
+    <button id="open-stats" type="button" class="btn-ghost" title="用量统计">
+      <span class="icon">📊</span>
+      <span class="label">用量统计</span>
+      <span id="stats-summary" class="config-summary">— tokens</span>
+    </button>
     <button id="open-history" type="button" class="btn-ghost" title="历史记录">
       <span class="icon">🗂</span>
       <span class="label">历史记录</span>
@@ -33,7 +38,10 @@
 <main class="layout">
   <!-- 左：输入 -->
   <section class="panel input-panel">
-    <h2>输入文本</h2>
+    <div class="panel-head">
+      <h2>输入文本</h2>
+      <button id="new-project-btn" type="button" class="btn-mini" title="清空当前输入与结果，开始一个新工程">+ 新建</button>
+    </div>
     <textarea id="novel-text" placeholder="粘贴一段小说文本……建议先用 1000~3000 字试跑"></textarea>
     <div class="char-count"><span id="char-count">0</span> 字</div>
 
@@ -193,6 +201,60 @@
   </div>
 </div>
 
+<!-- 用量统计弹窗 -->
+<div id="stats-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-dialog modal-wide" role="dialog" aria-modal="true" aria-labelledby="stats-title">
+    <header class="modal-header">
+      <h2 id="stats-title">用量统计</h2>
+      <button class="modal-close" type="button" data-close aria-label="关闭">✕</button>
+    </header>
+
+    <div class="modal-body">
+      <p class="modal-hint">统计口径：所有已保存工程的 LLM 调用次数与 token 用量汇总。未保存的抽取不计入。<code>?</code> 表示后端没返回 token 用量（如部分本地模型），仅记录了次数。</p>
+
+      <div id="stats-total" class="stats-total"></div>
+
+      <h3 class="stats-section-title">按后端 / 模型</h3>
+      <table class="result-table stats-table">
+        <thead>
+          <tr>
+            <th>后端 / 模型</th>
+            <th class="num">工程数</th>
+            <th class="num">调用次数</th>
+            <th class="num">输入 tokens</th>
+            <th class="num">输出 tokens</th>
+            <th class="num">合计 tokens</th>
+            <th class="num">总耗时</th>
+          </tr>
+        </thead>
+        <tbody id="stats-by-backend"></tbody>
+      </table>
+
+      <h3 class="stats-section-title">最近工程</h3>
+      <table class="result-table stats-table">
+        <thead>
+          <tr>
+            <th>工程</th>
+            <th>后端</th>
+            <th class="num">调用</th>
+            <th class="num">输入</th>
+            <th class="num">输出</th>
+            <th class="num">合计</th>
+            <th class="num">耗时</th>
+          </tr>
+        </thead>
+        <tbody id="stats-recent"></tbody>
+      </table>
+      <p id="stats-empty" class="empty-tip" hidden>还没有已保存的工程，先抽取并保存一次吧。</p>
+    </div>
+
+    <footer class="modal-footer">
+      <button class="btn-ghost" type="button" data-close>关闭</button>
+    </footer>
+  </div>
+</div>
+
 <!-- 历史记录弹窗 -->
 <div id="history-modal" class="modal" hidden>
   <div class="modal-backdrop" data-close></div>
@@ -215,6 +277,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

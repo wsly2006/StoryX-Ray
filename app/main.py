@@ -390,6 +390,72 @@ def projects_list() -> list[dict]:
     return projects.list_projects()
 
 
+@app.get("/api/stats")
+def stats_summary() -> dict:
+    """所有已保存工程的 token/耗时聚合，用于顶栏「用量统计」弹窗。"""
+    items = projects.list_projects()
+    total = {
+        "projects": 0,
+        "calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "elapsed_sec": 0.0,
+        "partial": False,  # 只要有一条 partial，整体标记 partial
+    }
+    by_backend: dict[str, dict] = {}
+    recent: list[dict] = []
+    for it in items:
+        s = it.get("stats") or {}
+        snap = it.get("preset_snapshot") or {}
+        backend = snap.get("backend") or "unknown"
+        model = snap.get("model") or ""
+        # 未保存过 preset_snapshot 的老工程也计入 unknown 桶
+        key = f"{backend}::{model}" if model else backend
+        b = by_backend.setdefault(
+            key,
+            {"backend": backend, "model": model, "projects": 0,
+             "calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+             "total_tokens": 0, "elapsed_sec": 0.0},
+        )
+        b["projects"] += 1
+        b["calls"] += int(s.get("calls") or 0)
+        b["prompt_tokens"] += int(s.get("prompt_tokens") or 0)
+        b["completion_tokens"] += int(s.get("completion_tokens") or 0)
+        b["total_tokens"] += int(s.get("total_tokens") or 0)
+        b["elapsed_sec"] += float(s.get("elapsed_sec") or 0.0)
+
+        total["projects"] += 1
+        total["calls"] += int(s.get("calls") or 0)
+        total["prompt_tokens"] += int(s.get("prompt_tokens") or 0)
+        total["completion_tokens"] += int(s.get("completion_tokens") or 0)
+        total["total_tokens"] += int(s.get("total_tokens") or 0)
+        total["elapsed_sec"] += float(s.get("elapsed_sec") or 0.0)
+        if s.get("partial"):
+            total["partial"] = True
+
+        recent.append({
+            "id": it.get("id"),
+            "name": it.get("name"),
+            "created_at": it.get("created_at"),
+            "backend": backend,
+            "model": model,
+            "calls": int(s.get("calls") or 0),
+            "prompt_tokens": int(s.get("prompt_tokens") or 0),
+            "completion_tokens": int(s.get("completion_tokens") or 0),
+            "total_tokens": int(s.get("total_tokens") or 0),
+            "elapsed_sec": float(s.get("elapsed_sec") or 0.0),
+            "partial": bool(s.get("partial")),
+        })
+
+    total["elapsed_sec"] = round(total["elapsed_sec"], 2)
+    for b in by_backend.values():
+        b["elapsed_sec"] = round(b["elapsed_sec"], 2)
+    # 后端桶按 token 用量倒序，前端拿来直接渲染
+    by_backend_list = sorted(by_backend.values(), key=lambda x: x["total_tokens"], reverse=True)
+    return {"total": total, "by_backend": by_backend_list, "recent": recent}
+
+
 @app.post("/api/projects")
 def projects_create(body: SaveProjectRequest) -> dict:
     """用户主动保存：前端把刚抽取完的草稿发过来，这里落盘。"""

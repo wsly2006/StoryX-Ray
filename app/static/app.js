@@ -41,6 +41,13 @@ const els = {
   historyList: $("#history-list"),
   historyEmpty: $("#history-empty"),
   historySummary: $("#history-summary"),
+  statsBtn: $("#open-stats"),
+  statsModal: $("#stats-modal"),
+  statsSummary: $("#stats-summary"),
+  statsTotal: $("#stats-total"),
+  statsByBackend: $("#stats-by-backend"),
+  statsRecent: $("#stats-recent"),
+  statsEmpty: $("#stats-empty"),
 };
 
 const BACKEND_HINTS = {
@@ -494,6 +501,32 @@ function paintGraph() {
   graphChart.setOption(option, true);
 }
 
+// langextract 可视化 HTML 里 .lx-text-window 是固定高度，iframe 拉伸后底部会有大片留白；
+// 注入这段 CSS 让 body 变 flex-column、把文本窗口撑到底部，其他控件保持自然高度。
+const HIGHLIGHT_FIT_CSS = `
+<style id="storyxray-fit">
+  html, body { height: 100% !important; margin: 0 !important; }
+  body { display: flex !important; flex-direction: column !important; }
+  /* langextract 把 legend/text-window/controls 包在这个 wrapper 里，
+     必须让 wrapper 自己也是 flex-column 且抢满 body，text-window 才有可分配空间 */
+  .lx-animated-wrapper {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  /* langextract 源码里给 .lx-text-window 写死了 max-height: 260px，
+     必须显式 none 掉，否则 flex:1 会被 max-height 卡住 */
+  .lx-text-window {
+    flex: 1 !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    margin-bottom: 0 !important;
+  }
+</style>
+`;
+
 function renderHtmlHighlight(html) {
   if (!html) {
     els.htmlWrap.innerHTML = `<p class="empty-tip">本次未生成高亮视图。</p>`;
@@ -504,7 +537,11 @@ function renderHtmlHighlight(html) {
   els.htmlWrap.innerHTML = "";
   const iframe = document.createElement("iframe");
   iframe.setAttribute("sandbox", "allow-scripts");
-  iframe.srcdoc = html;
+  // 有 </head> 就插进 head，否则整段前置——不管 langextract 未来怎么改结构都能兜底
+  const injected = html.includes("</head>")
+    ? html.replace("</head>", HIGHLIGHT_FIT_CSS + "</head>")
+    : HIGHLIGHT_FIT_CSS + html;
+  iframe.srcdoc = injected;
   els.htmlWrap.appendChild(iframe);
 }
 
@@ -777,6 +814,7 @@ async function saveDraft() {
     setStatus(`已保存为工程「${data.name}」`, "success");
     clearDraft();
     refreshHistorySummary();
+    refreshStatsSummary();
   } catch (err) {
     console.error(err);
     setStatus(`保存失败：${err.message}`, "error");
@@ -939,6 +977,7 @@ async function deleteHistoryItem(item) {
     const resp = await fetch(`/api/projects/${encodeURIComponent(item.id)}`, { method: "DELETE" });
     if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
     await refreshHistorySummary();
+    refreshStatsSummary();
     renderHistoryList();
   } catch (err) {
     alert(`删除失败：${err.message}`);
@@ -954,6 +993,121 @@ async function openHistoryModal() {
 function closeHistoryModal() {
   els.historyModal.hidden = true;
 }
+
+// ---------- 用量统计 ----------
+const BACKEND_LABEL_FULL = { ...BACKEND_LABEL, unknown: "未知（旧工程）" };
+
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatElapsed(sec) {
+  if (!sec) return "0s";
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec - m * 60);
+  return `${m}m${String(s).padStart(2, "0")}s`;
+}
+
+async function refreshStatsSummary() {
+  try {
+    const resp = await fetch("/api/stats");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const t = data.total || {};
+    // 顶栏只用最紧凑的形式：合计 tokens
+    els.statsSummary.textContent = t.total_tokens
+      ? `${formatTokens(t.total_tokens)} tokens${t.partial ? "?" : ""}`
+      : "— tokens";
+    els.statsSummary._cache = data;
+  } catch (e) {
+    console.warn("读取用量统计失败", e);
+  }
+}
+
+function renderStats(data) {
+  const t = data.total || {};
+  if (!t.projects) {
+    els.statsTotal.innerHTML = "";
+    els.statsByBackend.innerHTML = "";
+    els.statsRecent.innerHTML = "";
+    els.statsEmpty.hidden = false;
+    return;
+  }
+  els.statsEmpty.hidden = true;
+
+  const mark = t.partial ? "?" : "";
+  els.statsTotal.innerHTML = `
+    <div class="stats-metric"><div class="metric-value">${t.projects}</div><div class="metric-label">工程数</div></div>
+    <div class="stats-metric"><div class="metric-value">${t.calls}</div><div class="metric-label">LLM 调用</div></div>
+    <div class="stats-metric"><div class="metric-value">${formatTokens(t.total_tokens)}${mark}</div><div class="metric-label">合计 tokens</div></div>
+    <div class="stats-metric"><div class="metric-value">${formatTokens(t.prompt_tokens)}</div><div class="metric-label">输入 tokens</div></div>
+    <div class="stats-metric"><div class="metric-value">${formatTokens(t.completion_tokens)}</div><div class="metric-label">输出 tokens</div></div>
+    <div class="stats-metric"><div class="metric-value">${formatElapsed(t.elapsed_sec)}</div><div class="metric-label">累计耗时</div></div>
+  `;
+
+  els.statsByBackend.innerHTML = (data.by_backend || []).map((b) => {
+    const label = BACKEND_LABEL_FULL[b.backend] || b.backend;
+    const modelText = b.model ? escapeHtml(b.model) : `<span class="muted">默认</span>`;
+    return `
+      <tr>
+        <td>${escapeHtml(label)}<div class="cell-sub">${modelText}</div></td>
+        <td class="num">${b.projects}</td>
+        <td class="num">${b.calls}</td>
+        <td class="num">${b.prompt_tokens.toLocaleString()}</td>
+        <td class="num">${b.completion_tokens.toLocaleString()}</td>
+        <td class="num strong">${b.total_tokens.toLocaleString()}</td>
+        <td class="num">${formatElapsed(b.elapsed_sec)}</td>
+      </tr>`;
+  }).join("");
+
+  els.statsRecent.innerHTML = (data.recent || []).slice(0, 20).map((r) => {
+    const label = BACKEND_LABEL_FULL[r.backend] || r.backend;
+    const mk = r.partial ? "?" : "";
+    return `
+      <tr>
+        <td>${escapeHtml(r.name || "(未命名)")}<div class="cell-sub">${formatHistoryTime(r.created_at)}</div></td>
+        <td>${escapeHtml(label)}${r.model ? `<div class="cell-sub">${escapeHtml(r.model)}</div>` : ""}</td>
+        <td class="num">${r.calls}</td>
+        <td class="num">${r.prompt_tokens.toLocaleString()}</td>
+        <td class="num">${r.completion_tokens.toLocaleString()}</td>
+        <td class="num strong">${r.total_tokens.toLocaleString()}${mk}</td>
+        <td class="num">${formatElapsed(r.elapsed_sec)}</td>
+      </tr>`;
+  }).join("");
+}
+
+async function openStatsModal() {
+  els.statsModal.hidden = false;
+  // 先渲染上次缓存的数据避免空白闪一下，再拉最新
+  if (els.statsSummary._cache) renderStats(els.statsSummary._cache);
+  try {
+    const resp = await fetch("/api/stats");
+    if (!resp.ok) throw new Error(resp.statusText);
+    const data = await resp.json();
+    els.statsSummary._cache = data;
+    renderStats(data);
+    // 顺手也把顶栏的数字更到最新
+    const t = data.total || {};
+    els.statsSummary.textContent = t.total_tokens
+      ? `${formatTokens(t.total_tokens)} tokens${t.partial ? "?" : ""}`
+      : "— tokens";
+  } catch (e) {
+    console.warn("拉取用量统计失败", e);
+  }
+}
+
+function closeStatsModal() { els.statsModal.hidden = true; }
+
+els.statsBtn.addEventListener("click", openStatsModal);
+els.statsModal.querySelectorAll("[data-close]").forEach((el) => {
+  el.addEventListener("click", closeStatsModal);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !els.statsModal.hidden) closeStatsModal();
+});
 
 els.historyBtn.addEventListener("click", openHistoryModal);
 els.historyModal.querySelectorAll("[data-close]").forEach((el) => {
@@ -980,6 +1134,30 @@ els.text.addEventListener("input", () => {
 els.runBtn.addEventListener("click", runExtraction);
 els.saveBtn.addEventListener("click", saveDraft);
 
+function newProject() {
+  // 有未保存草稿时先确认，避免误清
+  if (draftPayload && !confirm("当前有未保存的抽取结果，是否放弃并新建？")) return;
+  els.text.value = "";
+  els.charCount.textContent = "0";
+  clearDraft();
+  setStatus("");
+  // 右侧结果全部复位
+  renderHtmlHighlight("");
+  renderCharacters([]);
+  renderRelations([]);
+  renderEvents([]);
+  renderGraph([], []);
+  showProgress(false);
+  // 切回原文高亮 tab，感觉像刚打开页面
+  document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
+  document.querySelector('.tab[data-tab="highlight"]').classList.add("active");
+  document.getElementById("tab-highlight").classList.add("active");
+  els.text.focus();
+}
+document.getElementById("new-project-btn").addEventListener("click", newProject);
+
 // 初始化
 updateConfigSummary();
 refreshHistorySummary();
+refreshStatsSummary();

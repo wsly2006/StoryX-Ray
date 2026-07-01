@@ -14,12 +14,18 @@
 
 * { box-sizing: border-box; }
 
+/* html+body 撑满视口，body 做 flex 列布局，topbar 自然高度，layout 抢剩余 */
+html, body { height: 100%; }
+
 body {
   margin: 0;
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .topbar {
@@ -70,9 +76,13 @@ body {
 .layout {
   display: grid;
   grid-template-columns: minmax(380px, 1fr) 2fr;
+  /* 关键：显式给 row 高度，否则 grid 行默认 auto（内容高），
+     右侧 result-panel 就撑不到剩余高度，flex:1 的下游都拿不到高度 */
+  grid-template-rows: 1fr;
   gap: 20px;
   padding: 20px;
-  min-height: calc(100vh - 70px);
+  flex: 1;
+  min-height: 0;
 }
 
 .panel {
@@ -93,6 +103,15 @@ body {
 }
 
 .input-panel h2:not(:first-of-type) { margin-top: 18px; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.panel-head h2 { margin: 0; }
 
 /* 模态弹窗 */
 .modal {
@@ -502,8 +521,9 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 }
 .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
 
-.tab-pane { display: none; flex: 1; overflow: auto; }
-.tab-pane.active { display: block; }
+.tab-pane { display: none; flex: 1; min-height: 0; overflow: auto; }
+/* 用 flex-column，让内部的 frame-wrap / graph-chart 能撑到面板底部 */
+.tab-pane.active { display: flex; flex-direction: column; }
 
 .empty-tip { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
 
@@ -511,10 +531,64 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fafbff;
-  min-height: 480px;
-  overflow: auto;
+  min-height: 300px;
+  /* 让 iframe 撑到面板底部：自身 flex:1 抢占剩余空间，min-height:0 打破默认最小内容高度 */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
 }
-.frame-wrap iframe { width: 100%; border: 0; min-height: 480px; }
+.frame-wrap iframe { width: 100%; border: 0; flex: 1; min-height: 0; }
+.frame-wrap .empty-tip { margin: auto; }
+
+/* 用量统计 */
+.stats-total {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.stats-metric {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbff;
+  text-align: center;
+}
+.stats-metric .metric-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.stats-metric .metric-label {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+.stats-section-title {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+.stats-table th,
+.stats-table td { padding: 6px 10px; }
+.stats-table td.num,
+.stats-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.stats-table td.num.strong { font-weight: 600; color: var(--primary); }
+.stats-table .cell-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.stats-table .muted { color: var(--muted); font-style: italic; }
 
 /* 关系图 */
 .graph-toolbar {
@@ -545,7 +619,9 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fafbff;
-  height: 560px;
+  /* 关系图也一起撑满面板剩余高度 */
+  flex: 1;
+  min-height: 360px;
   position: relative;
 }
 

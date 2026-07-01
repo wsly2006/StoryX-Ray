@@ -1,0 +1,23 @@
+StoryX-Ray
+Copyright 2026 StoryX-Ray contributors
+
+Licensed under the MIT License. See LICENSE for details.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+This product includes software developed by Google LLC:
+
+  langextract
+  Copyright 2025 Google LLC
+  Licensed under the Apache License, Version 2.0
+
+  Source is vendored (bundled) at third_party/langextract/. The full text of
+  the Apache License 2.0 is at third_party/langextract/LICENSE.
+
+  The vendored source has been modified from upstream. See
+  third_party/langextract/MODIFICATIONS.md for a summary of changes as
+  required by Section 4(b) of the Apache License 2.0.
+
+  Upstream project: https://github.com/google/langextract

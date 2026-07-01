@@ -102,4 +102,11 @@ Content-Type: application/json
 
 ## 许可
 
-MIT
+本项目采用 **MIT** 许可，详见 [LICENSE](./LICENSE)。
+
+### 第三方组件
+
+`third_party/langextract/` 是 Google [langextract](https://github.com/google/langextract) 的源码副本，采用 **Apache-2.0** 许可，已按需修改。
+- 许可全文：[third_party/langextract/LICENSE](./third_party/langextract/LICENSE)
+- 修改说明：[third_party/langextract/MODIFICATIONS.md](./third_party/langextract/MODIFICATIONS.md)
+- 概要：见根目录 [NOTICE](./NOTICE)

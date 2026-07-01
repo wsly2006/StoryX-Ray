@@ -501,8 +501,16 @@ async function consumeSse(stream, started) {
       renderEvents(payload.events || []);
 
       const cost = ((Date.now() - started) / 1000).toFixed(1);
+      const stats = payload.stats || {};
+      // 状态行多塞 token 信息；本地模型若没返回 usage（partial=true）打个问号
+      let tokenBit = "";
+      if (stats.calls) {
+        const totalK = (stats.total_tokens / 1000).toFixed(1);
+        const mark = stats.partial ? "?" : "";
+        tokenBit = ` · ${stats.calls} 次调用 · ${totalK}k tokens${mark}（输入 ${stats.prompt_tokens} / 输出 ${stats.completion_tokens}）`;
+      }
       setStatus(
-        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条`,
+        `完成（${cost}s）：人物 ${payload.characters.length} 个，关系 ${payload.relationships.length} 条，事件 ${payload.events.length} 条${tokenBit}`,
         "success"
       );
 
@@ -518,6 +526,7 @@ async function consumeSse(stream, started) {
         characters: payload.characters || [],
         relationships: payload.relationships || [],
         events: payload.events || [],
+        stats: stats,
       });
 
       // 进度条停留 1 秒再收，给用户视觉确认
@@ -703,7 +712,12 @@ function renderHistoryList() {
 
     const stat = document.createElement("div");
     stat.className = "history-item-stat";
-    stat.textContent = `人物 ${stats.characters ?? 0} · 关系 ${stats.relationships ?? 0} · 事件 ${stats.events ?? 0}`;
+    let tokenSuffix = "";
+    if (stats.calls && stats.total_tokens) {
+      const k = (stats.total_tokens / 1000).toFixed(1);
+      tokenSuffix = ` · ${k}k tokens${stats.partial ? "?" : ""}`;
+    }
+    stat.textContent = `人物 ${stats.characters ?? 0} · 关系 ${stats.relationships ?? 0} · 事件 ${stats.events ?? 0}${tokenSuffix}`;
 
     main.appendChild(title);
     main.appendChild(meta);

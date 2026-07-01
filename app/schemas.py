@@ -52,3 +52,5 @@ class SaveProjectRequest(BaseModel):
     characters: list[str] = Field(default_factory=list)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
     events: list[dict[str, Any]] = Field(default_factory=list)
+    # 抽取时收集的运行统计：calls/prompt_tokens/completion_tokens/total_tokens/partial/...
+    stats: dict[str, Any] = Field(default_factory=dict)

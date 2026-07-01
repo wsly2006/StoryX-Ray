@@ -18,9 +18,15 @@ class ExtractionResult:
     extractions：用于业务汇总的抽取记录列表，元素需具备
         extraction_class / extraction_text / attributes / char_interval 字段。
     raw：引擎内部对象，仅传给同一引擎的 render_html，外层不读。
+    stats：可选的运行统计，结构形如
+        {"calls": int, "prompt_tokens": int, "completion_tokens": int,
+         "total_tokens": int, "partial": bool, "elapsed_ms_sum": float,
+         "elapsed_ms_max": float}
+    不支持统计的引擎留空 dict。
     """
     extractions: list = field(default_factory=list)
     raw: Any = None
+    stats: dict = field(default_factory=dict)
 
 
 class Extractor(ABC):

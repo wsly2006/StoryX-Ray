@@ -329,7 +329,7 @@ async def extract_stream(req: ExtractRequest):
                     logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
                     html = ""
 
-                # 保存改成用户手动触发，这里只把抽取耗时一并回前端
+                # 保存改成用户手动触发，这里只把抽取耗时与统计回前端
                 elapsed = round(time.monotonic() - started_at, 2)
                 yield _sse("done", {
                     "extractions": [e.model_dump() for e in extractions],
@@ -338,6 +338,7 @@ async def extract_stream(req: ExtractRequest):
                     "relationships": relationships,
                     "events": events,
                     "elapsed_sec": elapsed,
+                    "stats": result.stats or {},
                 })
                 return
 
@@ -378,6 +379,8 @@ def _build_project(req: SaveProjectRequest) -> dict:
             "characters": len(req.characters),
             "relationships": len(req.relationships),
             "events": len(req.events),
+            # 透传前端发回的引擎层统计（token 用量、LLM 调用次数等）
+            **(req.stats or {}),
         },
     }
 

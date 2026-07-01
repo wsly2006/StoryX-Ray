@@ -1,10 +1,13 @@
 """人物关系抽取的 prompt 与 few-shot 示例。
 
-放在独立模块里方便后续调整抽取效果，不污染主流程。
+示例结构故意用引擎无关的原生 dict/dataclass 表达，避免把 langextract 类型
+从这里泄漏出去。未来接自研引擎时，各自的 engine 负责把 EXAMPLES 转成引擎
+需要的对象。
 """
 from __future__ import annotations
 
-import langextract as lx
+from dataclasses import dataclass, field
+from typing import Any
 
 
 PROMPT_DESCRIPTION = """\
@@ -23,26 +26,32 @@ PROMPT_DESCRIPTION = """\
 """
 
 
-EXAMPLES: list[lx.data.ExampleData] = [
-    lx.data.ExampleData(
+@dataclass
+class ExampleExtraction:
+    """一条抽取样本；对应 langextract 里的 Extraction，但不依赖它。"""
+    extraction_class: str
+    extraction_text: str
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Example:
+    """一条 few-shot 样本：原文 + 一组抽取。"""
+    text: str
+    extractions: list[ExampleExtraction] = field(default_factory=list)
+
+
+EXAMPLES: list[Example] = [
+    Example(
         text=(
             "贾母年高，最是怜爱小儿女的，因见宝玉与黛玉日则同行同坐，夜则同息同止，"
             "言和意顺，略无参商，故而对黛玉视如己出。宝玉笑道：「林妹妹，你别恼我。」"
         ),
         extractions=[
-            lx.data.Extraction(
-                extraction_class="character",
-                extraction_text="贾母",
-            ),
-            lx.data.Extraction(
-                extraction_class="character",
-                extraction_text="宝玉",
-            ),
-            lx.data.Extraction(
-                extraction_class="character",
-                extraction_text="黛玉",
-            ),
-            lx.data.Extraction(
+            ExampleExtraction(extraction_class="character", extraction_text="贾母"),
+            ExampleExtraction(extraction_class="character", extraction_text="宝玉"),
+            ExampleExtraction(extraction_class="character", extraction_text="黛玉"),
+            ExampleExtraction(
                 extraction_class="relationship",
                 extraction_text="对黛玉视如己出",
                 attributes={
@@ -51,7 +60,7 @@ EXAMPLES: list[lx.data.ExampleData] = [
                     "relation": "外祖母与外孙女（视如己出）",
                 },
             ),
-            lx.data.Extraction(
+            ExampleExtraction(
                 extraction_class="relationship",
                 extraction_text="日则同行同坐，夜则同息同止",
                 attributes={
@@ -60,7 +69,7 @@ EXAMPLES: list[lx.data.ExampleData] = [
                     "relation": "青梅竹马",
                 },
             ),
-            lx.data.Extraction(
+            ExampleExtraction(
                 extraction_class="event",
                 extraction_text="宝玉笑道：「林妹妹，你别恼我。」",
                 attributes={

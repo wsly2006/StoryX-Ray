@@ -516,6 +516,39 @@ button.primary:disabled { background: #a5b4fc; cursor: not-allowed; }
 }
 .frame-wrap iframe { width: 100%; border: 0; min-height: 480px; }
 
+/* 关系图 */
+.graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: #fafbff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.graph-toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+.graph-toolbar select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+.graph-toolbar .graph-toggle input { accent-color: var(--primary); }
+.graph-toolbar .graph-tip { flex: 1; text-align: right; font-size: 11px; }
+.graph-chart {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbff;
+  height: 560px;
+  position: relative;
+}
+
 .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0; }
 .chip {
   display: inline-block;

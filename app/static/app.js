@@ -372,6 +372,128 @@ function renderEvents(events) {
     .join("");
 }
 
+// ---------- 关系图（ECharts graph）----------
+let graphChart = null;
+let graphData = null;      // 最近一次 buildGraphData 的结果，切换布局/边标签时复用
+let graphDirty = false;    // 数据变了但当前 tab 没显示，切过来时再画
+
+function buildGraphData(characters, relationships) {
+  // 人物度数决定气泡大小和分类；关系中出现但 characters 里漏掉的人物也补进去
+  const degree = new Map();
+  const known = new Set(characters || []);
+  const edges = [];
+  for (const r of relationships || []) {
+    if (!r.person_a || !r.person_b) continue;
+    known.add(r.person_a);
+    known.add(r.person_b);
+    degree.set(r.person_a, (degree.get(r.person_a) || 0) + 1);
+    degree.set(r.person_b, (degree.get(r.person_b) || 0) + 1);
+    edges.push({
+      source: r.person_a,
+      target: r.person_b,
+      relation: r.relation || "",
+      evidence: r.evidence || "",
+    });
+  }
+  const nodes = Array.from(known).map((name) => {
+    const d = degree.get(name) || 0;
+    // 度 ≥ 3 主要，≥ 1 次要，0 孤立
+    const category = d >= 3 ? 0 : d >= 1 ? 1 : 2;
+    return {
+      name,
+      value: d,
+      symbolSize: 22 + Math.min(d, 8) * 4,
+      category,
+    };
+  });
+  return { nodes, edges };
+}
+
+function renderGraph(characters, relationships) {
+  graphData = buildGraphData(characters, relationships);
+  graphDirty = true;
+  // 只有 tab 当前可见时才立即画，否则容器是 display:none，ECharts 初始化会拿到 0 尺寸
+  const pane = document.getElementById("tab-graph");
+  if (pane && pane.classList.contains("active")) flushGraph();
+}
+
+function flushGraph() {
+  const container = document.getElementById("graph-chart");
+  if (!container) return;
+  if (!graphData || !graphData.nodes.length) {
+    if (graphChart) { graphChart.dispose(); graphChart = null; }
+    container.innerHTML = `<p class="empty-tip">未识别到人物关系。</p>`;
+    graphDirty = false;
+    return;
+  }
+  // 清掉 empty-tip 占位；ECharts 需要一个空的 div
+  if (!graphChart) {
+    container.innerHTML = "";
+    graphChart = echarts.init(container);
+  }
+  paintGraph();
+  graphDirty = false;
+}
+
+function paintGraph() {
+  if (!graphChart || !graphData) return;
+  const layoutEl = document.getElementById("graph-layout");
+  const edgeLabelEl = document.getElementById("graph-edge-label");
+  const layout = layoutEl ? layoutEl.value : "force";
+  const showEdgeLabel = edgeLabelEl ? edgeLabelEl.checked : true;
+
+  const option = {
+    tooltip: {
+      formatter: (p) => {
+        if (p.dataType === "edge") {
+          const d = p.data;
+          const ev = d.evidence ? `<div style="color:#94a3b8;margin-top:4px;max-width:280px;white-space:normal">${escapeHtml(d.evidence)}</div>` : "";
+          return `<b>${escapeHtml(d.source)} — ${escapeHtml(d.target)}</b><br/>${escapeHtml(d.relation)}${ev}`;
+        }
+        return `<b>${escapeHtml(p.data.name)}</b><br/>关系数：${p.data.value}`;
+      },
+    },
+    legend: [{
+      data: ["主要人物", "次要人物", "孤立人物"],
+      bottom: 6,
+      textStyle: { fontSize: 11, color: "#6b7280" },
+      itemGap: 14,
+    }],
+    animationDuration: 400,
+    animationEasingUpdate: "quinticInOut",
+    series: [{
+      type: "graph",
+      layout,
+      data: graphData.nodes,
+      links: graphData.edges.map((e) => ({
+        source: e.source,
+        target: e.target,
+        relation: e.relation,
+        evidence: e.evidence,
+        label: { show: showEdgeLabel, formatter: e.relation, fontSize: 10, color: "#475569" },
+      })),
+      categories: [
+        { name: "主要人物", itemStyle: { color: "#4f46e5" } },
+        { name: "次要人物", itemStyle: { color: "#22c55e" } },
+        { name: "孤立人物", itemStyle: { color: "#94a3b8" } },
+      ],
+      roam: true,
+      draggable: true,
+      label: { show: true, position: "right", fontSize: 12, color: "#1f2433" },
+      labelLayout: { hideOverlap: true },
+      lineStyle: { color: "source", curveness: 0.12, opacity: 0.65, width: 1.5 },
+      emphasis: {
+        focus: "adjacency",
+        lineStyle: { width: 3, opacity: 1 },
+        label: { fontWeight: "bold" },
+      },
+      force: { repulsion: 220, gravity: 0.08, edgeLength: [80, 160], layoutAnimation: true },
+      circular: { rotateLabel: true },
+    }],
+  };
+  graphChart.setOption(option, true);
+}
+
 function renderHtmlHighlight(html) {
   if (!html) {
     els.htmlWrap.innerHTML = `<p class="empty-tip">本次未生成高亮视图。</p>`;
@@ -499,6 +621,7 @@ async function consumeSse(stream, started) {
       renderCharacters(payload.characters || []);
       renderRelations(payload.relationships || []);
       renderEvents(payload.events || []);
+      renderGraph(payload.characters || [], payload.relationships || []);
 
       const cost = ((Date.now() - started) / 1000).toFixed(1);
       const stats = payload.stats || {};
@@ -570,8 +693,20 @@ document.querySelectorAll(".tab").forEach((btn) => {
     document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
     $("#tab-" + btn.dataset.tab).classList.add("active");
+    // 关系图 tab 是隐藏状态时不能 init（容器 0 尺寸），切过来再补画
+    if (btn.dataset.tab === "graph") {
+      if (graphDirty) flushGraph();
+      else if (graphChart) graphChart.resize();
+    }
   });
 });
+
+// 关系图工具栏
+const graphLayoutEl = document.getElementById("graph-layout");
+const graphEdgeLabelEl = document.getElementById("graph-edge-label");
+if (graphLayoutEl) graphLayoutEl.addEventListener("change", () => { if (graphChart) paintGraph(); });
+if (graphEdgeLabelEl) graphEdgeLabelEl.addEventListener("change", () => { if (graphChart) paintGraph(); });
+window.addEventListener("resize", () => { if (graphChart) graphChart.resize(); });
 
 // 弹窗交互
 els.configBtn.addEventListener("click", openConfigModal);
@@ -768,6 +903,7 @@ async function loadHistoryItem(pid) {
     renderCharacters(result.characters || []);
     renderRelations(result.relationships || []);
     renderEvents(result.events || []);
+    renderGraph(result.characters || [], result.relationships || []);
     // 加载的是已存工程，不是新抽取，自然没有待保存草稿
     clearDraft();
     setStatus(`已加载工程「${proj.name}」（${proj.input?.text?.length || 0} 字，只读视图；重新抽取会创建新工程）`, "success");

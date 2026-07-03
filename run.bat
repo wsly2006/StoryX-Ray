@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-REM 首次运行没有 .venv 时自建；再判 activate.bat 是防止半成品 venv
+REM Create venv on first run; also guards against a half-built one.
 if not exist ".venv\Scripts\activate.bat" (
     echo [StoryX-Ray] Virtual env not found, creating .venv ...
     python -m venv .venv
@@ -24,14 +24,14 @@ if not exist ".venv\Scripts\activate.bat" (
     call ".venv\Scripts\activate.bat"
 )
 
-REM 首跑没有 .env 时从模板复制并弹出编辑器；密钥没填直接跑也能进 UI，只是抽取时会 400
+REM Copy .env from template on first run and open editor so user can fill keys.
 if not exist ".env" (
     echo [StoryX-Ray] .env not found, copied from .env.example. Fill in your API key and retry.
     copy ".env.example" ".env" >nul
     notepad ".env"
 )
 
-REM 后台起一个子进程等 3 秒再开浏览器，避免服务器还没起来
+REM Open the browser after a 3s delay so the server has time to start.
 start "" /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:8765"
 
 echo [StoryX-Ray] Serving at http://127.0.0.1:8765

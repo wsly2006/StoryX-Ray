@@ -24,6 +24,8 @@ StoryX-Ray/
 │   ├── prompts.py       # Prompt 与 few-shot 示例
 │   ├── schemas.py       # 请求/响应模型
 │   └── static/          # 前端单页（HTML/CSS/JS）
+├── run.bat              # Windows 一键启动
+├── run.sh               # macOS/Linux 一键启动
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -31,21 +33,34 @@ StoryX-Ray/
 
 ## 快速开始
 
-### 1. 安装
+### 方式 A：一键启动（推荐）
+
+仓库根目录提供了跨平台启动脚本，首次运行会自动完成 **建虚拟环境 → 装依赖 → 从模板生成 `.env` → 起服务 → 打开浏览器** 全流程。
+
+- **Windows**：双击 [run.bat](./run.bat)，或在终端执行 `run.bat`
+- **macOS / Linux**：`./run.sh`（或 `bash run.sh`）
+
+首跑时脚本会在检测不到 `.env` 后自动打开编辑器，填好你所用后端的 API Key 保存即可。之后每次运行都会秒开服务。
+
+> 脚本默认监听 `127.0.0.1:8765`，改端口直接编辑 `run.bat` / `run.sh` 末尾的 `--port` 即可。
+
+### 方式 B：手动启动
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate      # macOS/Linux
 pip install -r requirements.txt
+
+cp .env.example .env            # 按需填写 API Key
+uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload
 ```
 
-### 2. 配置密钥
+### 配置密钥
 
-复制 `.env.example` 为 `.env`，按所用后端填写：
+`.env` 里按所用后端填写即可（UI 侧也支持临时覆盖，不落盘）：
 
 ```bash
-# 选其一即可，UI 也可临时覆盖
 EXTRACT_BACKEND=deepseek
 DEEPSEEK_API_KEY=你的密钥
 ```
@@ -57,13 +72,7 @@ DEEPSEEK_API_KEY=你的密钥
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | DeepSeek V4，性价比最高；如需更强可换 `deepseek-v4-pro` |
 | `openai` | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `gpt-4o-mini` | Kimi / 智谱 / 自部署 等通用入口 |
 
-### 3. 启动
-
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload
-```
-
-打开浏览器访问 <http://127.0.0.1:8765> 即可使用。
+服务起来后打开 <http://127.0.0.1:8765> 即可使用。
 
 > ⚠️ **仅供本机使用**：本服务默认无鉴权、无频率限制，请勿监听 `0.0.0.0` 或暴露到公网。
 > API Key 会保存在浏览器 `localStorage`，请勿在公共/共享机器上填写。

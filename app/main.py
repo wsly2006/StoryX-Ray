@@ -560,4 +560,10 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+# 浏览器约定俗成会请求 /favicon.ico，直接把 SVG 返回，避免日志里刷 404
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

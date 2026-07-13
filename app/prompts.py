@@ -10,6 +10,28 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# 用 JSON 返回是为了兼容 langextract 各 provider 的默认 JSON 模式
+# （OpenAI 会强制 response_format=json_object，Ollama 会加 format=json），
+# 让模型直接返回自由文本会被拒或被截，故统一用一个字段包起来
+SUMMARY_PROMPT = """\
+你是一名中文小说编辑，请根据下面这段小说文本，写一段 150-300 字的综合简介。
+
+要求：
+- 一段话，不要分点、不要分段、不要「简介：」等前缀
+- 覆盖主要人物、核心冲突与剧情走向
+- 语言凝练客观，忠实原文，不臆断人物动机
+- 严格控制在 150-300 字之间，宁少勿多
+
+请仅返回如下 JSON 结构，不要输出任何其他内容：
+{{"summary": "……在此写简介……"}}
+
+小说文本：
+<<<
+{text}
+>>>
+"""
+
+
 PROMPT_DESCRIPTION = """\
 你是一个小说人物关系抽取助手。请从给定的中文小说文本中抽取以下三类信息：
 

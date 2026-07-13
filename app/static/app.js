@@ -28,6 +28,11 @@ const els = {
   charactersList: $("#characters-list"),
   relationsBody: $("#relations-body"),
   eventsBody: $("#events-body"),
+  uploadBtn: $("#upload-btn"),
+  uploadInput: $("#upload-input"),
+  summaryBtn: $("#summary-btn"),
+  summaryStatus: $("#summary-status"),
+  summaryContent: $("#summary-content"),
   configBtn: $("#open-config"),
   configSummary: $("#config-summary"),
   configModal: $("#config-modal"),
@@ -362,6 +367,82 @@ function renderRelations(rels) {
     .join("");
 }
 
+// ---------- 简介 ----------
+// 当前面板显示的简介文本；点保存时会一并落进草稿
+let currentSummary = "";
+
+function renderSummary(text) {
+  currentSummary = text || "";
+  if (!currentSummary) {
+    els.summaryContent.classList.add("empty");
+    els.summaryContent.innerHTML = `<p class="empty-tip">抽取完成后，点击「生成简介」让 LLM 输出 150-300 字的综合简介。</p>`;
+    els.summaryBtn.textContent = "生成简介";
+    return;
+  }
+  els.summaryContent.classList.remove("empty");
+  els.summaryContent.textContent = currentSummary;
+  els.summaryBtn.disabled = false;
+  els.summaryBtn.textContent = "重新生成";
+}
+
+function setSummaryStatus(msg, kind = "") {
+  els.summaryStatus.textContent = msg || "";
+  els.summaryStatus.className = `summary-status ${kind}`;
+}
+
+async function runSummary({ silent = false } = {}) {
+  // 优先当前章节的原文（章节页），其次草稿里最近一次抽取的输入
+  const chapter = typeof getCurrentChapter === "function" ? getCurrentChapter() : null;
+  const text = (chapter?.text || draftPayload?.text || "").trim();
+  if (!text) {
+    setSummaryStatus("请先抽取或粘贴文本", "error");
+    return;
+  }
+  const preset = activePreset(workingConfig);
+  if (!preset) {
+    setSummaryStatus("请先在「模型配置」里保存一个预设", "error");
+    return;
+  }
+
+  els.summaryBtn.disabled = true;
+  els.summaryBtn.textContent = "生成中…";
+  setSummaryStatus(silent ? "抽取完成，正在自动生成简介…" : "调用 LLM 生成简介…", "loading");
+
+  try {
+    const resp = await fetch("/api/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        backend: preset.backend,
+        model: preset.model || null,
+        api_key: preset.apiKey || null,
+        base_url: preset.baseUrl || null,
+        // 章节页把简介也交给后端按 pid/cid 落盘，起始页 case 二者为空后端会跳过
+        project_id: currentPid || null,
+        chapter_id: currentCid || null,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    renderSummary(data.summary || "");
+    // 若当前有草稿（刚抽取完还未保存），把简介塞回草稿，保存时一起落盘
+    if (draftPayload) draftPayload.summary = data.summary || "";
+    const s = data.stats || {};
+    const tokenBit = s.total_tokens ? ` · ${s.total_tokens} tokens${s.partial ? "?" : ""}` : "";
+    setSummaryStatus(`已生成（${data.summary.length} 字${tokenBit}）`, "success");
+  } catch (err) {
+    console.error(err);
+    setSummaryStatus(`生成失败：${err.message}`, "error");
+  } finally {
+    els.summaryBtn.disabled = false;
+    els.summaryBtn.textContent = currentSummary ? "重新生成" : "生成简介";
+  }
+}
+
 function renderEvents(events) {
   if (!events.length) {
     els.eventsBody.innerHTML = `<tr><td colspan="3" class="empty-tip">未识别到事件。</td></tr>`;
@@ -546,9 +627,11 @@ function renderHtmlHighlight(html) {
 }
 
 async function runExtraction() {
-  const text = els.text.value.trim();
+  // 章节页触发：拿当前章节的原文（起始页不会走到这里）
+  const chapter = getCurrentChapter();
+  const text = (chapter?.text || "").trim();
   if (!text) {
-    setStatus("请先粘贴小说文本", "error");
+    setStatus("当前章节没有原文", "error");
     return;
   }
 
@@ -567,6 +650,9 @@ async function runExtraction() {
     preset_name: preset.name || null,
     extraction_passes: workingConfig.passes || 1,
     max_char_buffer: workingConfig.charBuffer || 1500,
+    // 让后端在 done 事件时自动写回章节，省一次 PUT
+    project_id: currentPid || null,
+    chapter_id: currentCid || null,
   };
 
   // 记下这次抽取的输入，done 回来时拼草稿要用——response 不会重复带回这些
@@ -686,8 +772,13 @@ async function consumeSse(stream, started) {
         characters: payload.characters || [],
         relationships: payload.relationships || [],
         events: payload.events || [],
+        summary: "",
         stats: stats,
       });
+
+      // 抽取完自动跑一次简介：用户选的是"两者都要"，抽取成功即触发；失败静默
+      renderSummary("");
+      runSummary({ silent: true }).catch(() => {});
 
       // 进度条停留 1 秒再收，给用户视觉确认
       setTimeout(() => showProgress(false), 1000);
@@ -779,18 +870,13 @@ let lastExtractCharBuffer = 1500;
 let lastExtractSnapshot = null;
 
 function stashDraft(payload) {
+  // 起始页化之后不再有"保存为工程"按钮：抽取结果由后端按 pid/cid 自动落盘。
+  // 保留 draftPayload 是给 runSummary 拿最近一次原文用的
   draftPayload = payload;
-  els.saveBar.hidden = false;
-  els.saveBtn.disabled = false;
-  els.saveBtn.textContent = "保存为工程";
 }
 
 function clearDraft() {
   draftPayload = null;
-  els.saveBar.hidden = true;
-  // 保存成功后顺手还原按钮，避免下次显示时仍停在"保存中…"
-  els.saveBtn.disabled = false;
-  els.saveBtn.textContent = "保存为工程";
 }
 
 async function saveDraft() {
@@ -799,6 +885,8 @@ async function saveDraft() {
     setStatus("没有待保存的草稿，请先完成一次抽取", "error");
     return;
   }
+  // 保存前把最新简介同步进草稿，避免用户"生成简介"后立刻保存时漏掉
+  draftPayload.summary = currentSummary || draftPayload.summary || "";
   els.saveBtn.disabled = true;
   els.saveBtn.textContent = "保存中…";
   try {
@@ -942,6 +1030,7 @@ async function loadHistoryItem(pid) {
     renderRelations(result.relationships || []);
     renderEvents(result.events || []);
     renderGraph(result.characters || [], result.relationships || []);
+    renderSummary(result.summary || "");
     // 加载的是已存工程，不是新抽取，自然没有待保存草稿
     clearDraft();
     setStatus(`已加载工程「${proj.name}」（${proj.input?.text?.length || 0} 字，只读视图；重新抽取会创建新工程）`, "success");
@@ -1109,13 +1198,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !els.statsModal.hidden) closeStatsModal();
 });
 
-els.historyBtn.addEventListener("click", openHistoryModal);
-els.historyModal.querySelectorAll("[data-close]").forEach((el) => {
-  el.addEventListener("click", closeHistoryModal);
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !els.historyModal.hidden) closeHistoryModal();
-});
+// 历史弹窗已被起始页替换，绑定跳过；相关函数保留供后续复用
+// els.historyBtn.addEventListener("click", openHistoryModal);
 
 els.configSave.addEventListener("click", () => {
   flushFormToPreset();
@@ -1128,11 +1212,8 @@ els.configSave.addEventListener("click", () => {
   setStatus(`已保存：默认预设「${preset.name}」· ${BACKEND_LABEL[preset.backend]}`, "success");
 });
 
-els.text.addEventListener("input", () => {
-  els.charCount.textContent = els.text.value.length;
-});
-els.runBtn.addEventListener("click", runExtraction);
-els.saveBtn.addEventListener("click", saveDraft);
+// 旧输入框/保存按钮已由起始页 + 章节页替换；下方步骤 B/C 会重新绑定 runBtn/summaryBtn
+// els.text.addEventListener("input", ...);  els.runBtn/saveBtn/summaryBtn 绑定挪到 setupProjectPage()
 
 function newProject() {
   // 有未保存草稿时先确认，避免误清
@@ -1147,6 +1228,8 @@ function newProject() {
   renderRelations([]);
   renderEvents([]);
   renderGraph([], []);
+  renderSummary("");
+  setSummaryStatus("");
   showProgress(false);
   // 切回原文高亮 tab，感觉像刚打开页面
   document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
@@ -1155,9 +1238,512 @@ function newProject() {
   document.getElementById("tab-highlight").classList.add("active");
   els.text.focus();
 }
-document.getElementById("new-project-btn").addEventListener("click", newProject);
+// 老的"新建工程"按钮已删掉，起始页的 #landing-new-btn 由步骤 B 绑定
+// document.getElementById("new-project-btn").addEventListener("click", newProject);
 
-// 初始化
+// ---------- 导入 txt ----------
+// 后端 ExtractRequest.text 的 max_length，客户端提前挡一次避免用户白等一次上传
+const MAX_TEXT_CHARS = 200_000;
+
+async function readTxtWithFallback(file) {
+  // Windows 常见中文文本是 GBK/GB18030；先按 UTF-8 试解，若出现替换符则回退 GBK
+  const buf = await file.arrayBuffer();
+  const utf8 = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  if (!utf8.includes("�")) return utf8;
+  try {
+    return new TextDecoder("gbk").decode(buf);
+  } catch {
+    // 极老浏览器可能不识 gbk 标签，退回带替换符的 UTF-8 结果，胜过报错
+    return utf8;
+  }
+}
+
+async function importTxtFile(file) {
+  if (!file) return;
+  // 后缀白名单：MIME 在 Windows 上经常是空的，name 检查更稳
+  if (!/\.txt$/i.test(file.name)) {
+    setStatus("仅支持 .txt 文件", "error");
+    return;
+  }
+  // 提前用文件大小挡一手：中文一字 3 字节，200k 字对应约 600KB；给到 2MB 兜住 BOM/换行/英文混合
+  if (file.size > 2 * 1024 * 1024) {
+    setStatus(`文件过大（${(file.size / 1024).toFixed(0)} KB），请裁剪到 2MB 以内`, "error");
+    return;
+  }
+
+  const hasContent = els.text.value.trim().length > 0;
+  const hasDraft = !!draftPayload;
+  if ((hasContent || hasDraft) && !confirm("导入将覆盖当前输入" + (hasDraft ? "和未保存的抽取结果" : "") + "，是否继续？")) {
+    return;
+  }
+
+  try {
+    let text = await readTxtWithFallback(file);
+    // 去掉 UTF-8 BOM 与统一换行，避免 LLM 分片时把 \r\n 当额外字符浪费窗口
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    text = text.replace(/\r\n?/g, "\n");
+
+    if (text.length > MAX_TEXT_CHARS) {
+      if (!confirm(`文件 ${text.length} 字超过上限 ${MAX_TEXT_CHARS}，将截断到前 ${MAX_TEXT_CHARS} 字导入。是否继续？`)) return;
+      text = text.slice(0, MAX_TEXT_CHARS);
+    }
+
+    els.text.value = text;
+    els.charCount.textContent = text.length;
+    clearDraft();
+    // 右侧结果一并复位——导入的新文本和旧抽取不匹配，留着会误导
+    renderHtmlHighlight("");
+    renderCharacters([]);
+    renderRelations([]);
+    renderEvents([]);
+    renderGraph([], []);
+    renderSummary("");
+    setSummaryStatus("");
+    setStatus(`已导入「${file.name}」（${text.length} 字），点击「开始抽取」即可`, "success");
+  } catch (err) {
+    console.error(err);
+    setStatus(`导入失败：${err.message}`, "error");
+  }
+}
+
+// 旧的 txt 导入/拖拽已迁移到新建工程弹窗，见步骤 B
+
+// ============================================================
+// 步骤 B+C：起始页 + 新建工程向导 + 工程页 + 章节路由
+// ============================================================
+
+// 当前正在查看的工程 & 章节；起始页时都是 null
+let currentPid = null;
+let currentCid = null;
+let currentProject = null;
+
+const pageLanding = document.getElementById("page-landing");
+const pageProject = document.getElementById("page-project");
+
+function showPage(name) {
+  pageLanding.hidden = name !== "landing";
+  pageProject.hidden = name !== "project";
+}
+
+function getCurrentChapter() {
+  if (!currentProject || !currentCid) return null;
+  return (currentProject.chapters || []).find((c) => c.id === currentCid) || null;
+}
+
+// ---------- 起始页 ----------
+const landingGrid = document.getElementById("landing-grid");
+const landingEmpty = document.getElementById("landing-empty");
+
+async function loadLanding() {
+  currentPid = null; currentCid = null; currentProject = null;
+  showPage("landing");
+  landingGrid.innerHTML = "";
+  try {
+    const resp = await fetch("/api/projects");
+    if (!resp.ok) throw new Error(resp.statusText);
+    const items = await resp.json();
+    renderProjectCards(items);
+    refreshStatsSummary();
+  } catch (err) {
+    console.warn("加载工程列表失败", err);
+    landingEmpty.hidden = false;
+    landingEmpty.textContent = `加载失败：${err.message}`;
+  }
+}
+
+function renderProjectCards(items) {
+  landingEmpty.hidden = items && items.length > 0;
+  landingGrid.innerHTML = "";
+  (items || []).forEach((it) => {
+    const card = document.createElement("div");
+    card.className = "project-card";
+    card.dataset.pid = it.id;
+
+    const title = document.createElement("div");
+    title.className = "project-card-title";
+    title.textContent = it.name || "(未命名)";
+
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    const chars = it.input_chars || 0;
+    const charsText = chars >= 1000 ? `${(chars / 1000).toFixed(1)}k字` : `${chars}字`;
+    const parts = [
+      formatHistoryTime(it.created_at),
+      `${it.chapter_count || 1} 章`,
+      charsText,
+    ];
+    meta.textContent = parts.filter(Boolean).join(" · ");
+
+    const prog = document.createElement("div");
+    prog.className = "project-card-progress";
+    const total = it.chapter_count || 1;
+    const done = it.extracted_count || 0;
+    const pct = Math.round((done / Math.max(total, 1)) * 100);
+    prog.innerHTML = `<span style="width:${pct}%"></span>`;
+
+    const progLabel = document.createElement("div");
+    progLabel.className = "project-card-meta";
+    progLabel.textContent = `已抽取 ${done}/${total}`;
+
+    const actions = document.createElement("div");
+    actions.className = "project-card-actions";
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button"; renameBtn.className = "btn-mini"; renameBtn.textContent = "改名";
+    renameBtn.addEventListener("click", (e) => { e.stopPropagation(); renameProject(it); });
+    const delBtn = document.createElement("button");
+    delBtn.type = "button"; delBtn.className = "btn-mini"; delBtn.textContent = "✕"; delBtn.title = "删除";
+    delBtn.addEventListener("click", (e) => { e.stopPropagation(); deleteProject(it); });
+    actions.appendChild(renameBtn); actions.appendChild(delBtn);
+
+    card.appendChild(title);
+    card.appendChild(meta);
+    card.appendChild(prog);
+    card.appendChild(progLabel);
+    card.appendChild(actions);
+    card.addEventListener("click", () => { location.hash = `#/p/${it.id}`; });
+    landingGrid.appendChild(card);
+  });
+}
+
+async function renameProject(item) {
+  const next = prompt("输入新名称：", item.name || "");
+  if (next === null) return;
+  const name = next.trim();
+  if (!name || name === item.name) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(item.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    loadLanding();
+  } catch (err) { alert(`改名失败：${err.message}`); }
+}
+
+async function deleteProject(item) {
+  if (!confirm(`确定删除工程「${item.name}」？此操作不可撤销。`)) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    loadLanding();
+  } catch (err) { alert(`删除失败：${err.message}`); }
+}
+
+// ---------- 新建工程弹窗 ----------
+const newModal = document.getElementById("new-modal");
+const newName = document.getElementById("new-name");
+const newTextArea = document.getElementById("new-text");
+const newCharCount = document.getElementById("new-char-count");
+const newUploadBtn = document.getElementById("new-upload-btn");
+const newUploadInput = document.getElementById("new-upload-input");
+const stepInput = document.getElementById("new-step-input");
+const stepPreview = document.getElementById("new-step-preview");
+const previewModeLabel = document.getElementById("preview-mode-label");
+const previewCountLabel = document.getElementById("preview-count-label");
+const previewToggleBtn = document.getElementById("preview-toggle-mode");
+const previewList = document.getElementById("preview-list");
+const btnNewBack = document.getElementById("new-back");
+const btnNewNext = document.getElementById("new-next");
+const btnNewCreate = document.getElementById("new-create");
+
+// 当前预览的章节草稿，创建时用
+let previewChapters = [];
+let previewMode = "single";
+
+function openNewModal() {
+  newName.value = "";
+  newTextArea.value = "";
+  newCharCount.textContent = "0 字";
+  previewChapters = [];
+  previewMode = "single";
+  stepInput.hidden = false; stepPreview.hidden = true;
+  btnNewBack.hidden = true; btnNewNext.hidden = false; btnNewCreate.hidden = true;
+  newModal.hidden = false;
+  requestAnimationFrame(() => newName.focus());
+}
+function closeNewModal() { newModal.hidden = true; }
+
+newModal.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", closeNewModal));
+
+newTextArea.addEventListener("input", () => {
+  newCharCount.textContent = `${newTextArea.value.length} 字`;
+});
+
+newUploadBtn.addEventListener("click", () => newUploadInput.click());
+newUploadInput.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (!/\.txt$/i.test(file.name)) { alert("仅支持 .txt 文件"); return; }
+  if (file.size > 2 * 1024 * 1024) { alert(`文件过大（${(file.size / 1024).toFixed(0)} KB），请裁剪到 2MB 以内`); return; }
+  try {
+    let text = await readTxtWithFallback(file);
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    text = text.replace(/\r\n?/g, "\n");
+    if (text.length > MAX_TEXT_CHARS * 100) text = text.slice(0, MAX_TEXT_CHARS * 100);
+    newTextArea.value = text;
+    newCharCount.textContent = `${text.length} 字`;
+    if (!newName.value.trim()) newName.value = file.name.replace(/\.txt$/i, "");
+  } catch (err) { alert(`读取失败：${err.message}`); }
+});
+
+btnNewNext.addEventListener("click", () => {
+  const text = newTextArea.value;
+  if (!text.trim()) { alert("请粘贴或导入文本"); return; }
+  const split = window.Chapters.splitText(text);
+  previewMode = split.mode;
+  previewChapters = split.chapters.map((c) => ({ title: c.title, text: c.text, removed: false }));
+  renderPreview();
+  stepInput.hidden = true; stepPreview.hidden = false;
+  btnNewBack.hidden = false; btnNewNext.hidden = true; btnNewCreate.hidden = false;
+});
+btnNewBack.addEventListener("click", () => {
+  stepInput.hidden = false; stepPreview.hidden = true;
+  btnNewBack.hidden = true; btnNewNext.hidden = false; btnNewCreate.hidden = true;
+});
+
+function renderPreview() {
+  const active = previewChapters.filter((c) => !c.removed);
+  const modeText = { single: "全文单章", chapter: "按章节切分", size: "按字数切分" }[previewMode] || previewMode;
+  previewModeLabel.textContent = `切分方式：${modeText}`;
+  previewCountLabel.textContent = `${active.length} 段，共 ${active.reduce((a, c) => a + c.text.length, 0)} 字`;
+  previewList.innerHTML = "";
+  previewChapters.forEach((ch, i) => {
+    const li = document.createElement("li");
+    li.className = "preview-item" + (ch.removed ? " removed" : "");
+    const title = document.createElement("input");
+    title.type = "text"; title.className = "preview-item-title"; title.value = ch.title;
+    title.addEventListener("input", () => { previewChapters[i].title = title.value; });
+    const chars = document.createElement("span");
+    chars.className = "preview-item-chars"; chars.textContent = `${ch.text.length} 字`;
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "preview-item-del";
+    del.textContent = ch.removed ? "撤销" : "✕";
+    del.title = ch.removed ? "撤销移除" : "移除本段";
+    del.addEventListener("click", () => { previewChapters[i].removed = !previewChapters[i].removed; renderPreview(); });
+    li.appendChild(title); li.appendChild(chars); li.appendChild(del);
+    previewList.appendChild(li);
+  });
+}
+
+previewToggleBtn.addEventListener("click", () => {
+  // 章节 → 字数 → 单章 → 章节 循环。字数模式没识别到章节时也允许切
+  const text = newTextArea.value;
+  if (previewMode === "chapter") {
+    previewMode = "size";
+    previewChapters = window.Chapters.splitBySize(text).map((c) => ({ title: c.title, text: c.text, removed: false }));
+  } else if (previewMode === "size") {
+    previewMode = "single";
+    previewChapters = [{ title: "全文", text: text.trim(), removed: false }];
+  } else {
+    const detected = window.Chapters.detectChapters(text);
+    if (detected && detected.length >= 2) {
+      previewMode = "chapter";
+      previewChapters = detected.map((c) => ({ title: c.title, text: c.text, removed: false }));
+    } else {
+      previewMode = "size";
+      previewChapters = window.Chapters.splitBySize(text).map((c) => ({ title: c.title, text: c.text, removed: false }));
+    }
+  }
+  renderPreview();
+});
+
+btnNewCreate.addEventListener("click", async () => {
+  const active = previewChapters.filter((c) => !c.removed && c.text.trim());
+  if (!active.length) { alert("至少保留一段"); return; }
+  const preset = activePreset(workingConfig);
+  const snapshot = preset ? {
+    name: preset.name || "", backend: preset.backend, model: preset.model || "",
+    base_url: preset.baseUrl || "",
+    passes: workingConfig.passes || 1, char_buffer: workingConfig.charBuffer || 1500,
+  } : {};
+  btnNewCreate.disabled = true; btnNewCreate.textContent = "创建中…";
+  try {
+    const resp = await fetch("/api/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: newName.value.trim(),
+        chapters: active.map((c) => ({ title: c.title, text: c.text })),
+        preset_snapshot: snapshot,
+        passes: workingConfig.passes || 1,
+        char_buffer: workingConfig.charBuffer || 1500,
+      }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    const proj = await resp.json();
+    closeNewModal();
+    location.hash = `#/p/${proj.id}`;
+  } catch (err) {
+    alert(`创建失败：${err.message}`);
+  } finally {
+    btnNewCreate.disabled = false; btnNewCreate.textContent = "创建";
+  }
+});
+
+// ---------- 工程页 ----------
+const chapterList = document.getElementById("chapter-list");
+const chapterProgress = document.getElementById("chapter-progress");
+const chapterTitleEl = document.getElementById("chapter-title");
+const chapterStatusEl = document.getElementById("chapter-status");
+const chapterTextEl = document.getElementById("chapter-text");
+const projectTitleEl = document.getElementById("project-title");
+const projectMetaEl = document.getElementById("project-meta");
+const projectLayout = document.querySelector(".project-layout");
+
+async function loadProject(pid) {
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(pid)}`);
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    currentProject = await resp.json();
+    currentPid = currentProject.id;
+    currentCid = currentProject.chapters[0]?.id || null;
+    renderProject();
+    showPage("project");
+  } catch (err) {
+    alert(`加载工程失败：${err.message}`);
+    location.hash = "#/";
+  }
+}
+
+function renderProject() {
+  if (!currentProject) return;
+  projectTitleEl.textContent = currentProject.name || "(未命名)";
+  const total = currentProject.chapters.length;
+  const total_chars = currentProject.chapters.reduce((a, c) => a + (c.text || "").length, 0);
+  const done = currentProject.chapters.filter((c) => c.status === "extracted").length;
+  projectMetaEl.textContent = `${total} 章 · ${total_chars} 字 · 已抽取 ${done}/${total}`;
+  // 单章工程隐藏侧栏
+  const sidebar = document.getElementById("chapter-sidebar");
+  if (total <= 1) {
+    projectLayout.classList.add("single-chapter");
+    sidebar.hidden = true;
+  } else {
+    projectLayout.classList.remove("single-chapter");
+    sidebar.hidden = false;
+  }
+  renderChapterSidebar();
+  renderChapterView();
+}
+
+function renderChapterSidebar() {
+  chapterList.innerHTML = "";
+  const total = currentProject.chapters.length;
+  const done = currentProject.chapters.filter((c) => c.status === "extracted").length;
+  chapterProgress.textContent = `${done} / ${total}`;
+  currentProject.chapters.forEach((ch) => {
+    const li = document.createElement("li");
+    li.className = "chapter-item" + (ch.id === currentCid ? " active" : "") + ` status-${ch.status || "pending"}`;
+    li.dataset.cid = ch.id;
+    const mark = document.createElement("span");
+    mark.className = "chapter-item-mark";
+    mark.textContent = ch.status === "extracted" ? "✓" : ch.status === "extracting" ? "…" : "○";
+    const title = document.createElement("span");
+    title.className = "chapter-item-title"; title.textContent = ch.title || ch.id;
+    const chars = document.createElement("span");
+    chars.className = "chapter-item-chars"; chars.textContent = `${(ch.text || "").length}`;
+    li.appendChild(mark); li.appendChild(title); li.appendChild(chars);
+    li.addEventListener("click", () => selectChapter(ch.id));
+    chapterList.appendChild(li);
+  });
+}
+
+function selectChapter(cid) {
+  // 抽取中不允许切走，避免 SSE 状态错乱
+  if (extracting) { alert("正在抽取本章，请等待完成"); return; }
+  currentCid = cid;
+  renderChapterSidebar();
+  renderChapterView();
+}
+
+function renderChapterView() {
+  const ch = getCurrentChapter();
+  if (!ch) return;
+  chapterTitleEl.textContent = ch.title || ch.id;
+  chapterStatusEl.textContent = ch.status === "extracted" ? "已抽取" : ch.status === "extracting" ? "抽取中…" : "未抽取";
+  chapterStatusEl.className = `chapter-status status-${ch.status || "pending"}`;
+  chapterTextEl.textContent = ch.text || "";
+  const r = ch.result || {};
+  renderHtmlHighlight(r.html || "");
+  renderCharacters(r.characters || []);
+  renderRelations(r.relationships || []);
+  renderEvents(r.events || []);
+  renderGraph(r.characters || [], r.relationships || []);
+  renderSummary(r.summary || "");
+  setSummaryStatus(""); setStatus("");
+  const runBtn = document.getElementById("run-btn");
+  runBtn.textContent = r.characters?.length ? "重新抽取本章" : "开始抽取本章";
+}
+
+// ---------- 抽取过程中的状态锁 ----------
+// runExtraction 已改为读章节；这里加一层包装：标记 extracting、完成后刷新侧栏
+let extracting = false;
+const _origRunExtraction = runExtraction;
+runExtraction = async function () {
+  const ch = getCurrentChapter();
+  if (!ch) return;
+  extracting = true;
+  ch.status = "extracting";
+  renderChapterSidebar();
+  renderChapterView();
+  try {
+    await _origRunExtraction();
+    // 后端 done 事件已把结果落盘，重新拉一次工程刷新章节状态/统计
+    const resp = await fetch(`/api/projects/${encodeURIComponent(currentPid)}`);
+    if (resp.ok) {
+      currentProject = await resp.json();
+      renderProject();
+      refreshStatsSummary();
+    }
+  } finally {
+    extracting = false;
+  }
+};
+
+document.getElementById("run-btn").addEventListener("click", () => runExtraction());
+document.getElementById("summary-btn").addEventListener("click", () => runSummary());
+document.getElementById("landing-new-btn").addEventListener("click", openNewModal);
+document.getElementById("back-to-landing").addEventListener("click", () => { location.hash = "#/"; });
+document.getElementById("brand-home").addEventListener("click", () => { location.hash = "#/"; });
+document.getElementById("brand-home").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); location.hash = "#/"; }
+});
+
+document.getElementById("rename-project-btn").addEventListener("click", async () => {
+  if (!currentProject) return;
+  const next = prompt("输入新名称：", currentProject.name || "");
+  if (next === null) return;
+  const name = next.trim();
+  if (!name || name === currentProject.name) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(currentPid)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+    currentProject.name = name;
+    projectTitleEl.textContent = name;
+  } catch (err) { alert(`改名失败：${err.message}`); }
+});
+
+// Esc 关闭新建弹窗
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !newModal.hidden) closeNewModal();
+});
+
+// ---------- 路由 ----------
+function handleRoute() {
+  const hash = location.hash || "#/";
+  const m = hash.match(/^#\/p\/(p-[\w-]+)$/);
+  if (m) {
+    const pid = m[1];
+    if (pid !== currentPid) loadProject(pid);
+    return;
+  }
+  loadLanding();
+}
+window.addEventListener("hashchange", handleRoute);
+
+// 初始化：refreshHistorySummary 已删除（历史弹窗被起始页替换）
 updateConfigSummary();
-refreshHistorySummary();
-refreshStatsSummary();
+handleRoute();

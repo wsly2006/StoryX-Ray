@@ -23,11 +23,13 @@ from fastapi.staticfiles import StaticFiles
 from . import projects
 from .extractor import get_extractor
 from .schemas import (
+    CreateProjectRequest,
     Extraction,
     ExtractRequest,
     ExtractResponse,
     RenameRequest,
-    SaveProjectRequest,
+    SummarizeRequest,
+    SummarizeResponse,
 )
 
 
@@ -329,8 +331,30 @@ async def extract_stream(req: ExtractRequest):
                     logger.warning("可视化渲染失败，回退空 HTML: %s", exc)
                     html = ""
 
-                # 保存改成用户手动触发，这里只把抽取耗时与统计回前端
                 elapsed = round(time.monotonic() - started_at, 2)
+                stats = {**(result.stats or {}), "elapsed_sec": elapsed}
+
+                # 抽取结果自动落盘到指定章节；未指定就只回传前端（保留给非工程场景）
+                persisted = False
+                if req.project_id and req.chapter_id:
+                    try:
+                        summary = projects.save_chapter_result(
+                            req.project_id,
+                            req.chapter_id,
+                            result={
+                                "extractions": [e.model_dump() for e in extractions],
+                                "html": html,
+                                "characters": characters,
+                                "relationships": relationships,
+                                "events": events,
+                            },
+                            stats=stats,
+                        )
+                        persisted = summary is not None
+                    except Exception:
+                        logger.exception("章节结果落盘失败: pid=%s cid=%s",
+                                          req.project_id, req.chapter_id)
+
                 yield _sse("done", {
                     "extractions": [e.model_dump() for e in extractions],
                     "html": html,
@@ -338,7 +362,8 @@ async def extract_stream(req: ExtractRequest):
                     "relationships": relationships,
                     "events": events,
                     "elapsed_sec": elapsed,
-                    "stats": result.stats or {},
+                    "stats": stats,
+                    "persisted": persisted,
                 })
                 return
 
@@ -350,39 +375,6 @@ async def extract_stream(req: ExtractRequest):
             "X-Accel-Buffering": "no",  # 关掉 nginx 缓冲，事件即时下发
         },
     )
-
-
-def _build_project(req: SaveProjectRequest) -> dict:
-    """把前端发回的草稿组装成完整工程 JSON。id/时间/名字都由后端定。"""
-    now = datetime.now()
-    name = (req.name or "").strip() or projects.auto_name(req.text, now)
-    return {
-        "id": projects.generate_id(),
-        "name": name,
-        "created_at": now.isoformat(timespec="seconds"),
-        "input": {
-            "text": req.text,
-            "preset_snapshot": req.preset_snapshot or {},
-            "passes": req.passes,
-            "char_buffer": req.char_buffer,
-        },
-        "result": {
-            "extractions": [e.model_dump() for e in req.extractions],
-            "html": req.html,
-            "characters": req.characters,
-            "relationships": req.relationships,
-            "events": req.events,
-        },
-        "stats": {
-            "elapsed_sec": req.elapsed_sec,
-            "input_chars": len(req.text),
-            "characters": len(req.characters),
-            "relationships": len(req.relationships),
-            "events": len(req.events),
-            # 透传前端发回的引擎层统计（token 用量、LLM 调用次数等）
-            **(req.stats or {}),
-        },
-    }
 
 
 @app.get("/api/projects")
@@ -440,6 +432,9 @@ def stats_summary() -> dict:
             "created_at": it.get("created_at"),
             "backend": backend,
             "model": model,
+            "chapter_count": int(it.get("chapter_count") or 0),
+            "extracted_count": int(it.get("extracted_count") or 0),
+            "input_chars": int(it.get("input_chars") or 0),
             "calls": int(s.get("calls") or 0),
             "prompt_tokens": int(s.get("prompt_tokens") or 0),
             "completion_tokens": int(s.get("completion_tokens") or 0),
@@ -457,16 +452,30 @@ def stats_summary() -> dict:
 
 
 @app.post("/api/projects")
-def projects_create(body: SaveProjectRequest) -> dict:
-    """用户主动保存：前端把刚抽取完的草稿发过来，这里落盘。"""
-    project = _build_project(body)
+def projects_create(body: CreateProjectRequest) -> dict:
+    """新建工程：只保存骨架，抽取结果由后续 /api/extract/stream 陆续写回各章节。"""
     try:
-        summary = projects.save_project(project)
+        project = projects.create_project(
+            name=body.name,
+            chapters=[c.model_dump() for c in body.chapters],
+            preset_snapshot=body.preset_snapshot,
+            passes=body.passes,
+            char_buffer=body.char_buffer,
+        )
     except Exception:
-        logger.exception("工程落盘失败")
-        raise HTTPException(status_code=500, detail="保存失败，请查看服务端日志") from None
-    # 返回完整工程而不仅是概要，前端可以立刻把它当作"已加载"状态用
-    return {"id": project["id"], "name": project["name"], "summary": summary}
+        logger.exception("工程创建失败")
+        raise HTTPException(status_code=500, detail="创建失败，请查看服务端日志") from None
+    return project
+
+
+@app.patch("/api/projects/{pid}/chapters/{cid}")
+def chapter_rename(pid: str, cid: str, body: RenameRequest) -> dict:
+    if not projects.is_valid_id(pid) or not projects.is_valid_chapter_id(cid):
+        raise HTTPException(status_code=400, detail="非法 id")
+    summary = projects.rename_chapter(pid, cid, body.name.strip())
+    if not summary:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    return summary
 
 
 @app.get("/api/projects/{pid}")
@@ -548,6 +557,56 @@ def extract(req: ExtractRequest) -> ExtractResponse:
         relationships=relationships,
         events=events,
     )
+
+
+@app.post("/api/summarize", response_model=SummarizeResponse)
+def summarize(req: SummarizeRequest) -> SummarizeResponse:
+    """让 LLM 生成一段话综合简介。复用抽取的预设/密钥；单次调用，无流式。"""
+    _validate_base_url(req.base_url)
+
+    engine = get_extractor()
+    cfg = engine.build_config(
+        backend=req.backend,
+        overrides={
+            "model": req.model,
+            "api_key": req.api_key,
+            "base_url": req.base_url,
+        },
+    )
+
+    if req.backend in {"gemini", "openai", "deepseek"} and not cfg.api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.backend} 后端需要 API Key，请在 .env 或 UI 中填写。",
+        )
+
+    if not hasattr(engine, "summarize"):
+        raise HTTPException(status_code=500, detail="当前引擎不支持生成简介")
+
+    logger.info(
+        "开始生成简介: engine=%s backend=%s model=%s chars=%d",
+        engine.name, cfg.backend, cfg.model_id, len(req.text),
+    )
+    try:
+        summary_text, stats = engine.summarize(req.text, cfg)
+    except Exception:
+        logger.exception("生成简介失败")
+        raise HTTPException(status_code=500, detail="生成简介失败，请查看服务端日志") from None
+
+    if not summary_text:
+        raise HTTPException(status_code=500, detail="LLM 未返回简介内容")
+
+    # 传了 project/chapter 就自动写回，简介和抽取结果落在同一个章节文件里
+    if req.project_id and req.chapter_id:
+        try:
+            projects.save_chapter_summary(
+                req.project_id, req.chapter_id, summary_text, stats=stats,
+            )
+        except Exception:
+            logger.exception("简介落盘失败: pid=%s cid=%s",
+                              req.project_id, req.chapter_id)
+
+    return SummarizeResponse(summary=summary_text, stats=stats)
 
 
 @app.get("/api/health")

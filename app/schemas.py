@@ -18,6 +18,9 @@ class ExtractRequest(BaseModel):
     preset_name: str | None = Field(default=None, description="预设名，用于保存到工程历史")
     extraction_passes: int = Field(default=1, ge=1, le=5, description="多轮抽取次数，提高召回")
     max_char_buffer: int = Field(default=1500, ge=200, le=8000, description="单次请求的最大字符窗口")
+    # 抽取完成后若带 project_id + chapter_id，服务端会把结果自动写回该章节
+    project_id: str | None = Field(default=None, description="目标工程 id，仅用于抽取结果落盘")
+    chapter_id: str | None = Field(default=None, description="目标章节 id，仅用于抽取结果落盘")
 
 
 class Extraction(BaseModel):
@@ -39,18 +42,34 @@ class RenameRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
 
 
-class SaveProjectRequest(BaseModel):
-    """前端把刚抽取完的草稿发回来落盘——id/时间戳/统计由后端生成。"""
+class SummarizeRequest(BaseModel):
+    """生成简介的请求。复用抽取的后端/模型/密钥配置，简介和抽取共享一套预设。"""
+    text: str = Field(..., min_length=1, max_length=200_000, description="待生成简介的小说原文")
+    backend: Backend = Field(..., description="LLM 后端")
+    model: str | None = Field(default=None)
+    api_key: str | None = Field(default=None)
+    base_url: str | None = Field(default=None)
+    # 简介生成完成后可自动写回指定章节
+    project_id: str | None = Field(default=None)
+    chapter_id: str | None = Field(default=None)
+
+
+class SummarizeResponse(BaseModel):
+    summary: str
+    # 用来给顶栏用量统计累加：一次简介调用大概几百 token，可忽略但不遗漏
+    stats: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChapterDraft(BaseModel):
+    """创建工程时的章节草稿：只需标题和原文，其他字段服务端补。"""
+    title: str = Field(default="", max_length=200)
     text: str = Field(..., min_length=1, max_length=200_000)
-    name: str | None = Field(default=None, max_length=200, description="留空走自动命名")
+
+
+class CreateProjectRequest(BaseModel):
+    """新建工程：只有骨架（名字 + 章节列表），没有抽取结果。"""
+    name: str = Field(default="", max_length=200, description="留空走自动命名")
+    chapters: list[ChapterDraft] = Field(..., min_length=1, max_length=500)
     preset_snapshot: dict[str, Any] = Field(default_factory=dict)
     passes: int = Field(default=1, ge=1, le=5)
     char_buffer: int = Field(default=1500, ge=200, le=8000)
-    elapsed_sec: float = Field(default=0.0, ge=0)
-    extractions: list[Extraction] = Field(default_factory=list)
-    html: str = Field(default="")
-    characters: list[str] = Field(default_factory=list)
-    relationships: list[dict[str, Any]] = Field(default_factory=list)
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    # 抽取时收集的运行统计：calls/prompt_tokens/completion_tokens/total_tokens/partial/...
-    stats: dict[str, Any] = Field(default_factory=dict)

@@ -14,8 +14,41 @@ from langextract import factory as lx_factory
 from langextract._storyxray_stats import RunStats
 from langextract.factory import ModelConfig
 
-from ..prompts import EXAMPLES, PROMPT_DESCRIPTION, Example
+from ..prompts import EXAMPLES, PROMPT_DESCRIPTION, SUMMARY_PROMPT, Example
 from .base import Extractor, ExtractionResult
+
+
+def _parse_summary_output(raw: str) -> str:
+    """从 LLM 输出里抠 summary。模型可能加 fence、前后废话或直接给纯文本，都要兜住。"""
+    if not raw:
+        return ""
+    import json
+    import re
+
+    # 去掉 ```json ... ``` 或 ``` ... ``` 包裹
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    # 优先按 JSON 解析
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and isinstance(obj.get("summary"), str):
+            return obj["summary"].strip()
+    except (ValueError, TypeError):
+        pass
+
+    # 兜底：从任意位置抓一段 JSON 对象出来
+    m = re.search(r'\{[^{}]*"summary"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"[^{}]*\}', raw, re.DOTALL)
+    if m:
+        try:
+            # 反转义 \n \" 等
+            return json.loads('"' + m.group(1) + '"').strip()
+        except (ValueError, TypeError):
+            return m.group(1).strip()
+
+    # 全都失败：把原文当纯简介返回，胜过报错
+    return raw.strip()
 
 
 def _to_lx_examples(examples: list[Example]) -> list:
@@ -202,3 +235,48 @@ class LangExtractEngine(Extractor):
             html_obj = lx.visualize(result.raw)
         # 装了 IPython 时返回 HTML 对象，否则是字符串
         return getattr(html_obj, "data", html_obj)
+
+    def summarize(self, text: str, cfg: LangExtractConfig) -> tuple[str, dict]:
+        """让 LLM 输出小说的一段话综合简介。返回 (简介文本, token 统计)。
+
+        直接调 provider 的 infer，不走 lx.extract：简介是单轮生成，不需要分片。
+        provider 默认 JSON 模式，SUMMARY_PROMPT 要求模型返回 {"summary": "..."}，
+        这里解析出来即可。
+        """
+        model_cfg, _, _ = _build_model_config(cfg)
+        # 保持各 provider 的默认 JSON 输出（OpenAI/Ollama 都强制），
+        # 关掉 fence（我们期望裸 JSON，而非 ```json 包裹）
+        model = lx_factory.create_model(
+            config=model_cfg,
+            examples=[],
+            use_schema_constraints=False,
+            fence_output=False,
+        )
+        stats = RunStats()
+        model._run_stats = stats
+
+        prompt = SUMMARY_PROMPT.format(text=text)
+        sink = io.StringIO()
+        t0 = time.monotonic()
+        logger.info(
+            "[lx-timing] summarize 开始: backend=%s model=%s chars=%d",
+            cfg.backend, cfg.model_id, len(text),
+        )
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            outputs = list(model.infer([prompt]))
+        elapsed = time.monotonic() - t0
+
+        raw_output = ""
+        if outputs and outputs[0]:
+            first = outputs[0][0]
+            raw_output = (getattr(first, "output", None) or "").strip()
+
+        summary_text = _parse_summary_output(raw_output)
+
+        summary_stats = stats.summary()
+        summary_stats["elapsed_sec"] = round(elapsed, 2)
+        logger.info(
+            "[lx-timing] summarize 结束: 耗时 %.2fs，输出 %d 字，tokens=%s",
+            elapsed, len(summary_text), summary_stats.get("total_tokens"),
+        )
+        return summary_text, summary_stats
